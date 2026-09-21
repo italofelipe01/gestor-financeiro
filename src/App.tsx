@@ -147,7 +147,7 @@ export default function App() {
     let totalPaid = 0;
     let totalPending = 0;
 
-    filterPersonalTransactions(transactions).forEach(t => {
+    filterPersonalTransactions<Transaction>(transactions).forEach(t => {
       if (t.costCenter === 'Receitas') {
         totalIncome += t.amount;
       } else if (t.costCenter === 'Despesas') {
