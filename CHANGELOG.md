@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/italofelipe01/gestor-financeiro/compare/v1.0.0...v1.1.0) (2026-09-21)
+
+
+### Features
+
+* **sheets:** conecta a planilha do google sheets por URL ([728c266](https://github.com/italofelipe01/gestor-financeiro/commit/728c26644c3572fc04d2e23a7d7d4ac0b2eeb8de))
+
 # 1.0.0 (2026-09-21)
 
 
