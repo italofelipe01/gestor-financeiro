@@ -1,0 +1,28 @@
+version: 2
+updates:
+  # Mantem as actions pinadas por SHA atualizadas (SHA e comentario de versao).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: ci
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # Ha package-lock.json versionado, entao o Dependabot tem o que propor mesmo
+  # com faixas "^" no package.json (ele atualiza o lockfile e abre PR tambem
+  # para saltos fora da faixa).
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore
+      prefix-development: chore
+    groups:
+      npm-dependencies:
+        patterns:
+          - "*"
