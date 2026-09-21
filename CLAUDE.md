@@ -76,6 +76,10 @@ Nao ha suite de testes automatizados neste projeto ainda. Se mexer em logica de 
 (`src/utils/finance.ts`, agregacoes de `server.ts`), teste manualmente pelo `npm run dev` antes
 de fechar a tarefa.
 
+`tsconfig.json` nao liga `strict`/`noImplicitAny`, entao `tsc --noEmit` nao acusa parametro ou
+retorno implicitamente `any` — só pega erro estrutural real (prop que nao existe, tipo
+incompativel). Nao é um gate exaustivo; revise tipos manualmente em codigo novo.
+
 ## Commits, versao e release
 
 - Conventional Commits em portugues, **sem acentos no assunto**: `feat(financas): ...`,
@@ -99,3 +103,7 @@ de fechar a tarefa.
   for adicionada, reintroduza a dependencia e documente a variavel em `.env.example`.
 - `costCenter` so tem dois valores validos (`'Despesas'` | `'Receitas'`); `normalizeCostCenter`
   em `finance.ts` decide o valor na importacao a partir de texto livre da planilha.
+- `@types/react`/`@types/react-dom` nao vinham instalados no template original: sem eles,
+  todo JSX e prop de componente resolvia como `any` silenciosamente (o editor mostrava dezenas
+  de erros TS7016/TS7026 que o `tsc --noEmit` da CLI nao acusava, por `noImplicitAny` estar
+  desligado). Ficam fixados no major do `react`/`react-dom` instalado (19.x).

@@ -43,3 +43,13 @@ credencial em texto plano.
 ambiente precisam voltar.
 **Regra:** dependencias e variaveis de ambiente documentadas refletem o que o codigo
 efetivamente usa.
+
+## 2026-09-21 — Adicionados `@types/react` e `@types/react-dom`
+
+**Motivo:** o template original nao instalava os tipos do React. `react`/`react-dom` nao
+embutem `.d.ts` proprios, entao todo JSX resolvia como `any` silenciosamente — o editor
+acusava dezenas de erros (TS7016/TS7026) que o `tsc --noEmit` da CLI nao mostrava, porque o
+projeto nao liga `noImplicitAny`.
+**Custo:** nenhum erro estrutural novo apareceu ao instalar os tipos (o codigo ja era
+consistente); o gate de lint passa a cobrir JSX de verdade dai em diante.
+**Regra:** `@types/react`/`@types/react-dom` fixados no major do `react`/`react-dom` (19.x).
