@@ -17,9 +17,11 @@ export interface TelegramConfig {
 }
 
 export interface GoogleSheetsConfig {
-  sheetUrl?: string;
-  spreadsheetId?: string;
-  range?: string;
+  sheetUrl: string;
+  spreadsheetId: string;
+  gid: string | null; // aba especifica, quando a URL aponta para uma
+  lastSyncAt: string | null; // ISO 8601
+  lastSyncCount: number;
 }
 
 export interface DashboardStats {

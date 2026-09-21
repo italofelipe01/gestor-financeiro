@@ -65,6 +65,20 @@ renomear so o `name` criaria inconsistencia sem ganho.
 **Regra:** texto visivel ao usuario usa "Contas+ Fácil"; identificador tecnico continua
 `gestor-financeiro`.
 
+## 2026-09-21 — Sheets conectado por export CSV publico, sem API key
+
+**Motivo:** antes nao existia integracao nenhuma — so um campo para colar celulas. O tipo
+`GoogleSheetsConfig` existia em `types.ts` sem nenhum uso. Das opcoes de acesso, o export CSV
+(`/gviz/tq?tqx=out:csv`) e a unica que nao exige credencial: nao ha API key, OAuth, conta de
+servico nem dependencia nova. Uma API key nao ajudaria, porque ela tambem so le planilha
+publica; privacidade real exigiria conta de servico, com projeto no Google Cloud e chave JSON.
+**Custo:** a planilha precisa estar compartilhada como "qualquer pessoa com o link pode ver" —
+quem tiver a URL le os dados. Quem nao aceitar isso continua com a importacao por colagem.
+**Regra:** o servidor busca o CSV (o navegador esbarraria em CORS), monta a URL a partir do id
+validado — nunca da URL crua do cliente, senao a rota vira proxy aberto — e trata a pagina de
+login HTML que o Google devolve com status 200 quando a planilha nao e publica. Sincronizar
+**substitui** os lancamentos: a planilha e a fonte da verdade.
+
 ## 2026-09-21 — Layout fluido no lugar de container de largura fixa
 
 **Motivo:** header, `main` e footer usavam `max-w-7xl mx-auto` (1280px), o que deixava grandes

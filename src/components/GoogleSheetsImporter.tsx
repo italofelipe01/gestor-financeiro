@@ -1,14 +1,8 @@
-import { useState } from 'react';
-import { Transaction } from '../types';
-import { Table, Upload, Clipboard, CheckCircle2, AlertCircle, RefreshCw, FileText, LayoutGrid } from 'lucide-react';
-import {
-  filterPersonalTransactions,
-  normalizeCostCenter,
-  normalizeText,
-  parseCurrencyBR,
-  parseDateToISO,
-  parsePaidStatus,
-} from '../utils/finance';
+import { useEffect, useState } from 'react';
+import { GoogleSheetsConfig, Transaction } from '../types';
+import { Table, Upload, Clipboard, CheckCircle2, AlertCircle, RefreshCw, FileText, LayoutGrid, Link2, Unlink, RotateCw } from 'lucide-react';
+import { filterPersonalTransactions } from '../utils/finance';
+import { parseSpreadsheetText } from '../utils/spreadsheet';
 
 interface GoogleSheetsImporterProps {
   onImportSuccess: (importedItems: Transaction[]) => void;
@@ -19,28 +13,88 @@ export default function GoogleSheetsImporter({ onImportSuccess, currentCount }: 
   const [pasteContent, setPasteContent] = useState('');
   const [loading, setLoading] = useState(false);
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [sheetUrl, setSheetUrl] = useState('');
+  const [sheetConfig, setSheetConfig] = useState<GoogleSheetsConfig | null>(null);
+  const [syncing, setSyncing] = useState(false);
 
-  const splitSpreadsheetRow = (line: string) => {
-    if (line.includes('\t')) return line.split('\t').map((c) => c.trim().replace(/^["']|["']$/g, ''));
+  useEffect(() => {
+    fetch('/api/sheets/config')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((config: GoogleSheetsConfig | null) => {
+        if (config) {
+          setSheetConfig(config);
+          setSheetUrl(config.sheetUrl);
+        }
+      })
+      .catch(() => undefined);
+  }, []);
 
-    const delimiter = line.includes(';') ? ';' : ',';
-    const columns: string[] = [];
-    let current = '';
-    let quoted = false;
+  const handleConnect = async () => {
+    setSyncing(true);
+    setStatusMsg(null);
+    try {
+      const res = await fetch('/api/sheets/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sheetUrl }),
+      });
+      const data = await res.json();
 
-    for (const char of line) {
-      if (char === '"') {
-        quoted = !quoted;
-      } else if (char === delimiter && !quoted) {
-        columns.push(current.trim());
-        current = '';
-      } else {
-        current += char;
+      if (!res.ok) {
+        setStatusMsg({ type: 'error', text: data.error || 'Nao foi possivel conectar a planilha.' });
+        return;
       }
-    }
 
-    columns.push(current.trim());
-    return columns.map((c) => c.replace(/^["']|["']$/g, ''));
+      setSheetConfig(data);
+      setStatusMsg({ type: 'success', text: 'Planilha conectada. Use "Sincronizar agora" para trazer os lancamentos.' });
+    } catch (e) {
+      setStatusMsg({ type: 'error', text: 'Nao foi possivel contatar o servidor.' });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const handleSync = async () => {
+    setSyncing(true);
+    setStatusMsg(null);
+    try {
+      const res = await fetch('/api/sheets/sync', { method: 'POST' });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setStatusMsg({ type: 'error', text: data.error || 'Falha ao sincronizar.' });
+        return;
+      }
+
+      onImportSuccess(data.data);
+      setSheetConfig((prev) =>
+        prev ? { ...prev, lastSyncAt: new Date().toISOString(), lastSyncCount: data.count } : prev,
+      );
+      setStatusMsg({
+        type: 'success',
+        text: `Planilha sincronizada: ${data.count} lancamentos. ${data.filteredOut} de obra foram isolados.`,
+      });
+    } catch (e) {
+      setStatusMsg({ type: 'error', text: 'Nao foi possivel contatar o servidor.' });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
+  const handleDisconnect = async () => {
+    if (!window.confirm('Desconectar a planilha? Os lancamentos ja importados continuam salvos.')) return;
+
+    setSyncing(true);
+    try {
+      await fetch('/api/sheets/config', { method: 'DELETE' });
+      setSheetConfig(null);
+      setSheetUrl('');
+      setStatusMsg({ type: 'success', text: 'Planilha desconectada.' });
+    } catch (e) {
+      setStatusMsg({ type: 'error', text: 'Nao foi possivel contatar o servidor.' });
+    } finally {
+      setSyncing(false);
+    }
   };
 
   // Parse TSV (Tab-Separated - standard Excel/Google Sheets copy paste) or CSV format
@@ -54,84 +108,8 @@ export default function GoogleSheetsImporter({ onImportSuccess, currentCount }: 
     setStatusMsg(null);
 
     try {
-      // Split into rows
-      const lines = pasteContent.split(/\r?\n/);
-      const parsedItems: Partial<Transaction>[] = [];
-      
-      let headerIndices = {
-        launch: -1,
-        costCenter: -1,
-        category: -1,
-        amount: -1,
-        paid: -1,
-        dueDate: -1,
-        paymentDate: -1,
-      };
-
-      lines.forEach((line, index) => {
-        const trimmed = line.trim();
-        if (!trimmed) return;
-
-        const columns = splitSpreadsheetRow(line);
-        const normalizedColumns = columns.map(normalizeText);
-
-        // Identify headers if line index is 0 or contains key words
-        const isHeader = normalizedColumns.some(col => 
-          col.includes('lanc') ||
-          col.includes('centro') ||
-          col.includes('segmento') ||
-          col.includes('expectativa') ||
-          col.includes('valor') ||
-          col.includes('venc')
-        );
-
-        if (isHeader && parsedItems.length === 0 && index <= 1) {
-          columns.forEach((col, idx) => {
-            const lower = normalizeText(col);
-            if (lower.includes('pagamento') || lower.includes('liquidacao')) headerIndices.paymentDate = idx;
-            else if (lower.includes('venc')) headerIndices.dueDate = idx;
-            else if (lower === 'pago' || lower === 'paga' || lower.includes('status')) headerIndices.paid = idx;
-            else if (lower.includes('lanç') || lower.includes('lanc') || lower.includes('desc') || lower.includes('item')) headerIndices.launch = idx;
-            else if (lower.includes('centro') || lower.includes('custo') || lower.includes('tipo')) headerIndices.costCenter = idx;
-            else if (lower.includes('seg') || lower.includes('oper') || lower.includes('cat')) headerIndices.category = idx;
-            else if (lower.includes('expe') || lower.includes('val') || lower.includes('quant')) headerIndices.amount = idx;
-          });
-          return; // Skip processing header row as an item
-        }
-
-        // Fallback guess indices if no header detected, or use position mapping
-        const colLaunch = headerIndices.launch !== -1 ? headerIndices.launch : 0;
-        const colCostCenter = headerIndices.costCenter !== -1 ? headerIndices.costCenter : 1;
-        const colCategory = headerIndices.category !== -1 ? headerIndices.category : 2;
-        const colAmount = headerIndices.amount !== -1 ? headerIndices.amount : 3;
-        const colPaid = headerIndices.paid !== -1 ? headerIndices.paid : 4;
-        const colDueDate = headerIndices.dueDate !== -1 ? headerIndices.dueDate : 5;
-        const colPaymentDate = headerIndices.paymentDate !== -1 ? headerIndices.paymentDate : 6;
-
-        const launch = columns[colLaunch] || '';
-        const costCenterRaw = columns[colCostCenter] || 'Despesas';
-        const category = columns[colCategory] || 'Geral';
-        const amountRaw = columns[colAmount] || '0';
-        const paidRaw = columns[colPaid] !== undefined ? columns[colPaid] : 'não';
-
-        if (!launch) return; // skip empty rows
-
-        const paid = parsePaidStatus(paidRaw);
-        const dueDate = parseDateToISO(columns[colDueDate]);
-        const paymentDate = paid ? parseDateToISO(columns[colPaymentDate], dueDate) : null;
-
-        parsedItems.push({
-          launch,
-          costCenter: normalizeCostCenter(costCenterRaw),
-          category,
-          amount: parseCurrencyBR(amountRaw),
-          paid,
-          dueDate,
-          paymentDate,
-        });
-      });
-
-      const personalItems = filterPersonalTransactions(parsedItems as Transaction[]);
+      const parsedItems = parseSpreadsheetText(pasteContent);
+      const personalItems = filterPersonalTransactions(parsedItems);
 
       if (personalItems.length === 0) {
         setStatusMsg({ type: 'error', text: 'Não foi possível detectar nenhuma linha válida para importação.' });
@@ -205,6 +183,95 @@ export default function GoogleSheetsImporter({ onImportSuccess, currentCount }: 
 
   return (
     <div className="space-y-6" id="google-sheets-importer-view">
+
+      {/* Status notice: vale para a conexao e para a colagem */}
+      {statusMsg && (
+        <div className={`p-4 rounded-xl flex items-start gap-3 text-sm ${
+          statusMsg.type === 'success' ? 'bg-emerald-50 text-emerald-800 border border-emerald-100' : 'bg-rose-50 text-rose-800 border border-rose-100'
+        }`}>
+          {statusMsg.type === 'success' ? <CheckCircle2 className="w-5 h-5 shrink-0" /> : <AlertCircle className="w-5 h-5 shrink-0" />}
+          <span className="font-medium">{statusMsg.text}</span>
+        </div>
+      )}
+
+      {/* Conexao direta com a planilha */}
+      <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-xs" id="google-sheets-connection">
+        <div className="flex items-center gap-3 border-b border-gray-100 pb-4 mb-6">
+          <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl">
+            <Link2 className="w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="font-bold text-gray-900 text-lg">Conectar planilha</h2>
+            <p className="text-xs text-gray-500">
+              Aponte a URL da sua planilha e o app busca os lançamentos direto dela
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <div>
+            <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-2">
+              URL da planilha
+            </label>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <input
+                type="url"
+                value={sheetUrl}
+                onChange={(e) => setSheetUrl(e.target.value)}
+                placeholder="https://docs.google.com/spreadsheets/d/..."
+                className="flex-1 min-w-0 text-sm border border-gray-200 rounded-xl px-4 py-2.5 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-800"
+              />
+              <button
+                onClick={handleConnect}
+                disabled={syncing || !sheetUrl.trim()}
+                className="bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs px-5 py-2.5 rounded-xl transition cursor-pointer disabled:opacity-55 shrink-0"
+              >
+                {sheetConfig ? 'Atualizar URL' : 'Conectar'}
+              </button>
+            </div>
+            <p className="text-[11px] text-gray-400 mt-2">
+              A planilha precisa estar compartilhada como <strong>"Qualquer pessoa com o link"</strong> (Leitor),
+              senão o app não consegue lê-la.
+            </p>
+          </div>
+
+          {sheetConfig && (
+            <div className="bg-slate-50 border border-slate-100 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-gray-700 flex items-center gap-1.5">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                  Planilha conectada
+                </p>
+                <p className="text-[11px] text-gray-500 mt-1">
+                  {sheetConfig.lastSyncAt
+                    ? `Última sincronização: ${new Date(sheetConfig.lastSyncAt).toLocaleString('pt-BR')} (${sheetConfig.lastSyncCount} lançamentos)`
+                    : 'Ainda não sincronizada.'}
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  onClick={handleSync}
+                  disabled={syncing}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold text-xs px-4 py-2 rounded-xl transition cursor-pointer disabled:opacity-55 flex items-center gap-1.5"
+                >
+                  <RotateCw className={`w-3.5 h-3.5 ${syncing ? 'animate-spin' : ''}`} />
+                  Sincronizar agora
+                </button>
+                <button
+                  onClick={handleDisconnect}
+                  disabled={syncing}
+                  className="bg-white hover:bg-rose-50 text-rose-700 border border-rose-200 font-medium text-xs px-3 py-2 rounded-xl transition cursor-pointer disabled:opacity-55 flex items-center gap-1.5"
+                >
+                  <Unlink className="w-3.5 h-3.5" />
+                  Desconectar
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+
       <div className="bg-white rounded-2xl border border-gray-100 p-6 shadow-xs">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-gray-100 pb-4 mb-6">
           <div className="flex items-center gap-3">
@@ -212,8 +279,8 @@ export default function GoogleSheetsImporter({ onImportSuccess, currentCount }: 
               <Table className="w-5 h-5" />
             </div>
             <div>
-              <h2 className="font-bold text-gray-900 text-lg">Importar do Google Sheets</h2>
-              <p className="text-xs text-gray-500">Substitua ou adicione lançamentos facilmente copiando e colando células</p>
+              <h2 className="font-bold text-gray-900 text-lg">Importar copiando e colando</h2>
+              <p className="text-xs text-gray-500">Alternativa manual, para quando a planilha não estiver compartilhada por link</p>
             </div>
           </div>
 
@@ -228,16 +295,6 @@ export default function GoogleSheetsImporter({ onImportSuccess, currentCount }: 
             </button>
           </div>
         </div>
-
-        {/* Status notice */}
-        {statusMsg && (
-          <div className={`p-4 rounded-xl flex items-start gap-3 text-sm mb-6 ${
-            statusMsg.type === 'success' ? 'bg-emerald-50 text-emerald-800 border border-emerald-100' : 'bg-rose-50 text-rose-800 border border-rose-100'
-          }`}>
-            {statusMsg.type === 'success' ? <CheckCircle2 className="w-5 h-5 shrink-0" /> : <AlertCircle className="w-5 h-5 shrink-0" />}
-            <span className="font-medium">{statusMsg.text}</span>
-          </div>
-        )}
 
         <div className="grid grid-cols-1 lg:grid-cols-5 gap-8">
           

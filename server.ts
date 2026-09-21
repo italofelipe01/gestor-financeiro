@@ -3,7 +3,14 @@ import path from 'path';
 import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
 import { INITIAL_TRANSACTIONS } from './src/data/seed';
-import { Transaction, TelegramConfig } from './src/types';
+import { Transaction, TelegramConfig, GoogleSheetsConfig } from './src/types';
+import { filterPersonalTransactions } from './src/utils/finance';
+import {
+  buildCsvExportUrl,
+  extractSheetGid,
+  extractSpreadsheetId,
+  parseSpreadsheetText,
+} from './src/utils/spreadsheet';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -17,6 +24,7 @@ app.use(express.json());
 const DB_DIR = path.join(process.cwd(), 'data');
 const TRANSACTIONS_FILE = path.join(DB_DIR, 'transactions.json');
 const TELEGRAM_FILE = path.join(DB_DIR, 'telegram.json');
+const SHEETS_FILE = path.join(DB_DIR, 'sheets.json');
 
 if (!fs.existsSync(DB_DIR)) {
   fs.mkdirSync(DB_DIR, { recursive: true });
@@ -76,6 +84,26 @@ function saveTelegramConfig(config: TelegramConfig) {
     fs.writeFileSync(TELEGRAM_FILE, JSON.stringify(config, null, 2), 'utf-8');
   } catch (err) {
     console.error('Error writing telegram.json:', err);
+  }
+}
+
+// Google Sheets connection
+function loadSheetsConfig(): GoogleSheetsConfig | null {
+  try {
+    if (fs.existsSync(SHEETS_FILE)) {
+      return JSON.parse(fs.readFileSync(SHEETS_FILE, 'utf-8'));
+    }
+  } catch (err) {
+    console.error('Error reading sheets.json:', err);
+  }
+  return null;
+}
+
+function saveSheetsConfig(config: GoogleSheetsConfig) {
+  try {
+    fs.writeFileSync(SHEETS_FILE, JSON.stringify(config, null, 2), 'utf-8');
+  } catch (err) {
+    console.error('Error writing sheets.json:', err);
   }
 }
 
@@ -356,8 +384,110 @@ app.get('/api/telegram/preview-report', (req, res) => {
   res.json({ report: report.markdown });
 });
 
+// 3. Google Sheets connection
+app.get('/api/sheets/config', (req, res) => {
+  res.json(loadSheetsConfig());
+});
 
-// 3. BACKGROUND CRON JOB LOOPER
+app.post('/api/sheets/config', (req, res) => {
+  const sheetUrl = String(req.body.sheetUrl || '').trim();
+  const spreadsheetId = extractSpreadsheetId(sheetUrl);
+
+  if (!spreadsheetId) {
+    return res.status(400).json({
+      error: 'URL invalida. Cole o endereco completo da planilha, no formato https://docs.google.com/spreadsheets/d/...',
+    });
+  }
+
+  const existing = loadSheetsConfig();
+  const config: GoogleSheetsConfig = {
+    sheetUrl,
+    spreadsheetId,
+    gid: extractSheetGid(sheetUrl),
+    // Trocar de planilha invalida o histórico de sincronizacao anterior.
+    lastSyncAt: existing?.spreadsheetId === spreadsheetId ? existing.lastSyncAt : null,
+    lastSyncCount: existing?.spreadsheetId === spreadsheetId ? existing.lastSyncCount : 0,
+  };
+
+  saveSheetsConfig(config);
+  res.json(config);
+});
+
+app.delete('/api/sheets/config', (req, res) => {
+  try {
+    if (fs.existsSync(SHEETS_FILE)) fs.unlinkSync(SHEETS_FILE);
+  } catch (err) {
+    console.error('Error removing sheets.json:', err);
+  }
+  res.json({ success: true });
+});
+
+// Baixa a planilha e substitui os lancamentos. A planilha e a fonte da verdade:
+// sincronizar sobrescreve o que estiver salvo, e nao mescla.
+app.post('/api/sheets/sync', async (req, res) => {
+  const config = loadSheetsConfig();
+  if (!config) {
+    return res.status(400).json({ error: 'Nenhuma planilha conectada. Informe a URL da planilha primeiro.' });
+  }
+
+  // A URL buscada e sempre montada a partir do id ja validado, e nunca a string
+  // que veio do cliente: isso impede que a rota vire um proxy para qualquer host.
+  const csvUrl = buildCsvExportUrl(config.spreadsheetId, config.gid);
+
+  let csv: string;
+  try {
+    const response = await fetch(csvUrl, { signal: AbortSignal.timeout(15000) });
+
+    if (!response.ok) {
+      return res.status(502).json({
+        error: `O Google respondeu ${response.status}. Confirme que a planilha esta compartilhada como "qualquer pessoa com o link pode ver".`,
+      });
+    }
+
+    csv = await response.text();
+  } catch (err) {
+    console.error('Error fetching spreadsheet:', err);
+    return res.status(502).json({ error: 'Nao foi possivel baixar a planilha. Verifique a conexao e a URL.' });
+  }
+
+  // Planilha sem acesso publico devolve a pagina de login (HTML), com status 200.
+  if (csv.trimStart().startsWith('<')) {
+    return res.status(502).json({
+      error: 'A planilha nao esta publica. No Google Sheets, use Compartilhar > "Qualquer pessoa com o link" como Leitor.',
+    });
+  }
+
+  const parsed = parseSpreadsheetText(csv);
+  const personalItems = filterPersonalTransactions(parsed);
+
+  if (personalItems.length === 0) {
+    return res.status(422).json({
+      error: 'Nenhuma linha valida encontrada na planilha. Confira se as colunas seguem a ordem sugerida.',
+    });
+  }
+
+  const transactions: Transaction[] = personalItems.map((item, idx) => ({
+    ...item,
+    id: 'tx-sheet-' + idx + '-' + Math.random().toString(36).substring(2, 7),
+  }));
+
+  saveTransactions(transactions);
+  saveSheetsConfig({
+    ...config,
+    lastSyncAt: new Date().toISOString(),
+    lastSyncCount: transactions.length,
+  });
+
+  res.json({
+    success: true,
+    count: transactions.length,
+    filteredOut: parsed.length - personalItems.length,
+    data: transactions,
+  });
+});
+
+
+// 4. BACKGROUND CRON JOB LOOPER
 // Runs every 30 seconds to check if we should trigger the daily automatic message.
 setInterval(async () => {
   const config = loadTelegramConfig();

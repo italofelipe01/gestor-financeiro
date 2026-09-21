@@ -21,7 +21,7 @@ porque `repository.url` do `package.json` e o que o semantic-release usa.
 - Express serve a API (`server.ts`) e, em desenvolvimento, o Vite em modo middleware; em
   producao, os arquivos estaticos de `dist/`.
 - Persistencia em arquivos JSON dentro de `data/` (`transactions.json`, `telegram.json`,
-  `notif-logs.json`), criados na primeira execucao. Sem banco de dados.
+  `sheets.json`, `notif-logs.json`), criados na primeira execucao. Sem banco de dados.
 - Plataforma de desenvolvimento: Windows / PowerShell. Node 22+.
 
 ## Comandos
@@ -44,6 +44,8 @@ src/
 ├── types.ts            Transaction, TelegramConfig, GoogleSheetsConfig, DashboardStats
 ├── data/seed.ts         dados iniciais usados quando data/transactions.json nao existe
 ├── utils/finance.ts     normalizacao de texto/data/moeda, filtro de despesas de obra
+├── utils/spreadsheet.ts parser de TSV/CSV e helpers de URL do Sheets; usado tanto pela
+│                        colagem manual (cliente) quanto pela sincronizacao (servidor)
 └── components/
     ├── FinanceCharts.tsx        graficos da visao geral
     ├── FinanceTable.tsx         CRUD da tabela de lancamentos
@@ -67,7 +69,13 @@ src/
    `server.ts`; `notif-logs.json` evita reenviar o aviso no mesmo dia.
 5. **Nenhum segredo em arquivo versionado.** `.env` fica fora do git; o modelo e
    `.env.example`.
-6. **Nada de container com largura fixa.** Header, `main` e footer usam a utility
+6. **A rota `/api/sheets/sync` nunca busca a URL que o cliente mandou.** Ela extrai o id da
+   planilha com `extractSpreadsheetId` e monta a URL de export com `buildCsvExportUrl`. Fazer
+   `fetch(req.body.sheetUrl)` transformaria a rota num proxy aberto (SSRF), com o servidor
+   alcancando qualquer host — inclusive a rede interna.
+7. **O parser de planilha mora em `src/utils/spreadsheet.ts`**, nao dentro do componente:
+   colagem manual e sincronizacao precisam concordar sobre como uma linha vira lancamento.
+8. **Nada de container com largura fixa.** Header, `main` e footer usam a utility
    `page-shell` (`src/index.css`), que da largura total com gutter fluido. Nao reintroduza
    `max-w-7xl mx-auto` — era isso que deixava as bordas vazias em tela larga. Grid novo
    comeca em `grid-cols-2` no celular e sobe por breakpoint ate `xl`.

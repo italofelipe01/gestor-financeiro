@@ -59,11 +59,37 @@ vencidas.
 
 - **Visao geral:** cartoes de receitas, despesas, pago, a pagar e saldo liquido, com graficos.
 - **Lancamentos:** CRUD de transacoes (receita ou despesa), com status pago/pendente.
-- **Importar planilha:** cola dados do Google Sheets e substitui a base de lancamentos.
+- **Planilha conectada:** aponte a URL da sua planilha do Google Sheets e o app busca os
+  lancamentos direto dela (ver abaixo). Tambem da para colar as celulas manualmente.
 - **Telegram:** configura token do bot e chat ID; envia um resumo diario automatico no horario
   configurado, alem de permitir testar e disparar manualmente.
 - **Layout fluido:** a interface ocupa a largura total da tela em qualquer dispositivo, com
   gutter e tipografia que escalam com a viewport (celular, notebook, monitor 4K ou ultrawide).
+
+## Conectar a planilha do Google Sheets
+
+O app le a planilha pelo export CSV publico do proprio Google — sem API key e sem OAuth. Por
+isso a planilha precisa estar compartilhada por link:
+
+1. No Google Sheets: **Compartilhar > Acesso geral > "Qualquer pessoa com o link" > Leitor**.
+2. Copie a URL da planilha (se quiser uma aba especifica, copie com a aba aberta, para levar o
+   `#gid=`).
+3. No app, aba **Importar Planilha Google Sheets > Conectar planilha**, cole a URL e clique em
+   **Conectar**.
+4. Clique em **Sincronizar agora**. A planilha e a fonte da verdade: sincronizar **substitui**
+   os lancamentos salvos, nao mescla.
+
+As colunas esperadas sao `Lançamento | Centro de custo | Segmento | Expectativa | Pago |
+Vencimento | Pagamento`. O cabecalho e reconhecido por palavra-chave, entao pequenas variacoes
+de nome funcionam; sem cabecalho reconhecivel, vale a ordem acima. Valores em `R$ 1.234,56` e
+datas em `DD/MM/AAAA` sao convertidos automaticamente.
+
+A conexao fica em `data/sheets.json` (fora do git). O servidor monta a URL de download a partir
+do id da planilha — nunca busca a URL crua enviada pelo navegador, para a rota nao virar um
+proxy aberto.
+
+**Privacidade:** "qualquer pessoa com o link" significa que quem tiver a URL consegue ler a
+planilha. Se isso nao servir, use a importacao por colagem, que nao exige compartilhamento.
 
 ## Variaveis de ambiente
 
