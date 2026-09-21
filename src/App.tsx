@@ -179,7 +179,7 @@ export default function App() {
       
       {/* Visual top navigation bar */}
       <header className="bg-white border-b border-gray-150 sticky top-0 z-40">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex items-center justify-between">
+        <div className="page-shell py-3 sm:py-4 flex items-center justify-between gap-4">
           
           {/* Logo brand */}
           <div className="flex items-center gap-3">
@@ -187,7 +187,7 @@ export default function App() {
               <Building2 className="w-6 h-6" />
             </div>
             <div>
-              <h1 className="text-xl font-bold text-gray-900 leading-none">Gestor Financeiro</h1>
+              <h1 className="text-lg sm:text-xl font-bold text-gray-900 leading-none">Contas+ Fácil</h1>
               <span className="text-xs text-indigo-600 font-semibold tracking-wide flex items-center gap-1">
                 <Sparkles className="w-3 h-3" />
                 Planilha Inteligente & Alertas
@@ -219,7 +219,7 @@ export default function App() {
       </header>
 
       {/* Main Container Content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <main className="page-shell py-6 sm:py-8">
         
         {/* Navigation Tab rail */}
         <div className="flex border-b border-gray-200 gap-1 overflow-x-auto pb-px mb-8" id="layout-categories-tab-rail">
@@ -295,10 +295,10 @@ export default function App() {
             {activeTab === 'visao-geral' && (
               <div className="space-y-8 animate-in fade-in duration-300">
                 {/* Scorecards Rows grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+                <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3 sm:gap-4">
                   
                   {/* Card 1: Receitas */}
-                  <div className="bg-white p-5 border border-gray-100 rounded-2xl shadow-xs flex items-center gap-4">
+                  <div className="bg-white p-4 sm:p-5 border border-gray-100 rounded-2xl shadow-xs flex items-center gap-3 sm:gap-4">
                     <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center shrink-0">
                       <TrendingUp className="w-5 h-5" />
                     </div>
@@ -309,7 +309,7 @@ export default function App() {
                   </div>
 
                   {/* Card 2: Despesas */}
-                  <div className="bg-white p-5 border border-gray-100 rounded-2xl shadow-xs flex items-center gap-4">
+                  <div className="bg-white p-4 sm:p-5 border border-gray-100 rounded-2xl shadow-xs flex items-center gap-3 sm:gap-4">
                     <div className="w-10 h-10 rounded-xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0">
                       <TrendingDown className="w-5 h-5" />
                     </div>
@@ -320,7 +320,7 @@ export default function App() {
                   </div>
 
                   {/* Card 3: Já Pago */}
-                  <div className="bg-white p-5 border border-gray-100 rounded-2xl shadow-xs flex items-center gap-4">
+                  <div className="bg-white p-4 sm:p-5 border border-gray-100 rounded-2xl shadow-xs flex items-center gap-3 sm:gap-4">
                     <div className="w-10 h-10 rounded-xl bg-teal-50 text-teal-600 flex items-center justify-center shrink-0">
                       <CheckCircle className="w-5 h-5" />
                     </div>
@@ -331,7 +331,7 @@ export default function App() {
                   </div>
 
                   {/* Card 4: Falta Pagar */}
-                  <div className="bg-white p-5 border border-gray-100 rounded-2xl shadow-xs flex items-center gap-4">
+                  <div className="bg-white p-4 sm:p-5 border border-gray-100 rounded-2xl shadow-xs flex items-center gap-3 sm:gap-4">
                     <div className="w-10 h-10 rounded-xl bg-yellow-50 text-yellow-600 flex items-center justify-center shrink-0">
                       <Calendar className="w-5 h-5" />
                     </div>
@@ -342,7 +342,7 @@ export default function App() {
                   </div>
 
                   {/* Card 5: Net Balance */}
-                  <div className="bg-gradient-to-br from-indigo-900 to-slate-900 p-5 rounded-2xl shadow-sm text-white flex items-center gap-4">
+                  <div className="bg-gradient-to-br from-indigo-900 to-slate-900 p-4 sm:p-5 rounded-2xl shadow-sm text-white flex items-center gap-4 col-span-2 lg:col-span-1">
                     <div className="w-10 h-10 rounded-xl bg-white/10 text-indigo-300 flex items-center justify-center shrink-0">
                       <CheckCircle className="w-5 h-5" />
                     </div>
@@ -417,8 +417,8 @@ export default function App() {
 
       {/* Aesthetic human literal margin footer */}
       <footer className="border-t border-gray-150 py-6 mt-16 bg-white shrink-0">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 text-center text-xs text-gray-400 font-medium">
-          Gestor Financeiro Pessoal • {new Date().getFullYear()}
+        <div className="page-shell text-center text-xs text-gray-400 font-medium">
+          Contas+ Fácil • Controle financeiro pessoal • {new Date().getFullYear()}
         </div>
       </footer>
 

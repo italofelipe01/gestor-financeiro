@@ -1,5 +1,5 @@
 {
-  "name": "Gestor Financeiro",
+  "name": "Contas+ Fácil",
   "description": "Controle seus gastos, visualize o que já foi pago, configure notificações diárias no Telegram e integre com o Google Sheets.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]

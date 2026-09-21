@@ -1,4 +1,4 @@
-# Gestor Financeiro — Guia para o Claude
+# Contas+ Fácil — Guia para o Claude
 
 Contexto operacional deste repositorio. Leia antes de propor codigo, investigar bug ou desenhar
 feature. O README descreve o produto para quem usa; este arquivo descreve as regras para quem
@@ -10,6 +10,10 @@ versionamento e release, em [docs/RELEASE.md](docs/RELEASE.md).
 App pessoal de controle financeiro: dashboard de receitas/despesas, tabela de lancamentos,
 importador de planilha do Google Sheets e notificacoes diarias no Telegram sobre despesas
 pendentes ou vencidas. Uso individual, sem autenticacao.
+
+O nome de exibicao e **Contas+ Fácil**. O slug tecnico (`package.json` `name`, diretorio e
+repositorio no GitHub) continua `gestor-financeiro` — nao renomeie um sem o outro sem motivo,
+porque `repository.url` do `package.json` e o que o semantic-release usa.
 
 ## Stack e runtime
 
@@ -63,6 +67,10 @@ src/
    `server.ts`; `notif-logs.json` evita reenviar o aviso no mesmo dia.
 5. **Nenhum segredo em arquivo versionado.** `.env` fica fora do git; o modelo e
    `.env.example`.
+6. **Nada de container com largura fixa.** Header, `main` e footer usam a utility
+   `page-shell` (`src/index.css`), que da largura total com gutter fluido. Nao reintroduza
+   `max-w-7xl mx-auto` — era isso que deixava as bordas vazias em tela larga. Grid novo
+   comeca em `grid-cols-2` no celular e sobe por breakpoint ate `xl`.
 
 ## Gates antes de fechar qualquer tarefa de codigo
 

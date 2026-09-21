@@ -187,7 +187,7 @@ function compilePendingReport(transactions: Transaction[]): { markdown: string; 
   const totalPending = transactions.filter(t => t.costCenter === 'Despesas' && !t.paid).reduce((acc, t) => acc + t.amount, 0);
   const totalIncome = transactions.filter(t => t.costCenter === 'Receitas').reduce((acc, t) => acc + t.amount, 0);
 
-  let markdown = `*📅 GESTOR FINANCEIRO - AVISOS DIÁRIOS*\n\n`;
+  let markdown = `*📅 CONTAS+ FÁCIL - AVISOS DIÁRIOS*\n\n`;
   
   if (upcomingCount > 0) {
     markdown += `Olá! Você tem *${upcomingCount}* despesas vencendo em breve ou vencidas que precisam de atenção:\n\n`;
@@ -318,7 +318,7 @@ app.post('/api/telegram/test', async (req, res) => {
     return res.status(400).json({ error: 'Configuração do Telegram incompleta. Preencha o Token do Bot e Chat ID.' });
   }
 
-  const testMessage = `🔔 *Teste de Notificação - Gestor Financeiro*\n\nOlá! Seu bot de finanças está funcionando perfeitamente. O aplicativo está conectado e programado para te avisar sobre as próximas contas.`;
+  const testMessage = `🔔 *Teste de Notificação - Contas+ Fácil*\n\nOlá! Seu bot de finanças está funcionando perfeitamente. O aplicativo está conectado e programado para te avisar sobre as próximas contas.`;
   
   const ok = await sendTelegramMessage(token, chat, testMessage);
   if (ok) {

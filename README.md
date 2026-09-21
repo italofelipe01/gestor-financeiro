@@ -1,8 +1,11 @@
-# Gestor Financeiro
+# Contas+ Fácil
 
 Controle pessoal de gastos: acompanhe o que ja foi pago e o que falta, importe lancamentos de
 uma planilha do Google Sheets e receba avisos diarios no Telegram sobre despesas pendentes ou
 vencidas.
+
+> O diretorio e o repositorio continuam com o slug tecnico `gestor-financeiro`; "Contas+ Fácil"
+> e o nome de exibicao do produto.
 
 ## Stack
 
@@ -59,6 +62,8 @@ vencidas.
 - **Importar planilha:** cola dados do Google Sheets e substitui a base de lancamentos.
 - **Telegram:** configura token do bot e chat ID; envia um resumo diario automatico no horario
   configurado, alem de permitir testar e disparar manualmente.
+- **Layout fluido:** a interface ocupa a largura total da tela em qualquer dispositivo, com
+  gutter e tipografia que escalam com a viewport (celular, notebook, monitor 4K ou ultrawide).
 
 ## Variaveis de ambiente
 

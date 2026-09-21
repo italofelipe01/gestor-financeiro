@@ -1,1 +1,16 @@
 @import "tailwindcss";
+
+/* A base tipografica acompanha a viewport: 16px no celular, ~17px em 1920px e
+   18px a partir de 2560px. Como quase toda medida do Tailwind e em rem, isso
+   escala espacamento, altura de linha e icones junto com o texto, em vez de
+   deixar a interface minuscula num monitor grande. */
+html {
+  font-size: clamp(16px, 0.15625vw + 14px, 18px);
+}
+
+/* Container padrao das telas: largura total com gutter proporcional a viewport,
+   no lugar de um max-width fixo que deixa as bordas vazias em tela larga. */
+@utility page-shell {
+  width: 100%;
+  padding-inline: clamp(1rem, 2.5vw, 4rem);
+}
