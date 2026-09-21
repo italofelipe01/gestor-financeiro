@@ -1,0 +1,44 @@
+name: Quality Gate
+
+# Unica definicao do gate. Roda em PR para main e e chamado pelo Release
+# (workflow_call) antes de versionar: um push para main passa por aqui atraves
+# do Release, e nao por um gatilho proprio - assim cada push verifica uma vez
+# so, e a versao publicada e sempre a do commit que acabou de passar no gate.
+on:
+  pull_request:
+    branches: [main]
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    name: Lint, tipos e build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Em PR, um push novo cancela a execucao anterior do mesmo PR. Chamado
+    # pelo Release, cada execucao tem grupo proprio e nunca e cancelada.
+    concurrency:
+      group: quality-static-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Configurar Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Tipos
+        run: npm run lint
+
+      # Nao ha framework de testes configurado no projeto ainda; o build cobre
+      # que o client (Vite) e o bundle do server (esbuild) continuam validos.
+      - name: Build
+        run: npm run build

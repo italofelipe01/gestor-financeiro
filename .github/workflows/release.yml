@@ -1,0 +1,82 @@
+name: Release
+
+# Versionamento semantico automatico. Processo completo em docs/RELEASE.md.
+#
+# A versao e derivada das mensagens de commit desde a ultima tag, seguindo
+# Conventional Commits (fix/perf -> patch, feat -> minor, BREAKING CHANGE ->
+# major).
+#
+# O gate de qualidade roda aqui dentro, chamado como workflow reutilizavel, e
+# nao por um gatilho de push proprio: assim cada push para main verifica uma
+# vez so, e o release depende (needs) do gate daquele mesmo commit.
+#
+# O passo de release empurra um commit "chore(release): vX.Y.Z" com a versao
+# atualizada no package.json e o CHANGELOG regenerado, cria a tag e publica a
+# GitHub Release. Push feito com o GITHUB_TOKEN nao dispara workflows, entao
+# o commit de versao nao reentra no ciclo.
+
+on:
+  push:
+    branches: [main]
+  # Permite disparar manualmente pela aba Actions, util para publicar sem
+  # esperar o proximo push.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality Gate
+    # A configuracao do semantic-release so conhece main; disparo manual em
+    # outra branch nao valida nem versiona.
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/quality.yml
+
+  release:
+    name: Versionar e publicar release
+    needs: quality
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    concurrency:
+      # Dois releases simultaneos brigariam pela mesma tag.
+      group: release-${{ github.ref_name }}
+      cancel-in-progress: false
+
+    permissions:
+      contents: write # criar a tag, o commit de versao e a Release
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # O semantic-release precisa do historico completo e das tags para
+          # saber qual foi a ultima versao e quais commits vieram depois. O
+          # checkout por nome de branch (e nao por SHA) e necessario: com HEAD
+          # desanexado ele nao reconhece a branch e nao versiona nada.
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Configurar Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      # Se outro push chegou a main enquanto o gate rodava, a branch ja aponta
+      # para um commit que nao passou por ele. Voltar para o SHA disparado
+      # garante que a versao publicada e a do commit verificado; o push do
+      # commit de versao entao falha por nao ser fast-forward, e o push mais
+      # novo publica a sua propria versao.
+      - name: Fixar o commit verificado
+        run: git reset --hard ${{ github.sha }}
+
+      - name: Calcular e publicar a proxima versao
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release
