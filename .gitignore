@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Banco local em JSON (transacoes, config e credenciais do bot do Telegram)
+data/
