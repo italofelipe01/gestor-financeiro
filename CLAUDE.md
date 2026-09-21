@@ -107,3 +107,7 @@ incompativel). Nao é um gate exaustivo; revise tipos manualmente em codigo novo
   todo JSX e prop de componente resolvia como `any` silenciosamente (o editor mostrava dezenas
   de erros TS7016/TS7026 que o `tsc --noEmit` da CLI nao acusava, por `noImplicitAny` estar
   desligado). Ficam fixados no major do `react`/`react-dom` instalado (19.x).
+- `src/vite-env.d.ts` (com `/// <reference types="vite/client" />`) tambem faltava: sem ele,
+  o editor nao reconhece importacao de `.css` e de outros assets do Vite (`import
+  './index.css'` em `src/main.tsx` acusava TS2882). Nao mexa nesse arquivo alem da referencia
+  padrao.
