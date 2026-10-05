@@ -17,19 +17,19 @@
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^6.1.1",
-    "dotenv": "^18.0.0",
+    "dotenv": "^18.0.5",
     "express": "^5.2.1",
-    "lucide-react": "^1.47.0",
-    "motion": "^13.4.0",
+    "lucide-react": "^1.50.0",
+    "motion": "^14.0.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
-    "vite": "^8.3.0"
+    "vite": "^8.3.2"
   },
   "devDependencies": {
     "@semantic-release/changelog": "^7.0.0",
     "@semantic-release/git": "^11.0.1",
     "@types/express": "^5.0.6",
-    "@types/node": "^26.6.1",
+    "@types/node": "^26.6.4",
     "@types/react": "^19.0.1",
     "@types/react-dom": "^19.0.1",
     "autoprefixer": "^10.4.21",
@@ -38,6 +38,6 @@
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~7.0.2",
-    "vite": "^8.3.0"
+    "vite": "^8.3.2"
   }
 }
