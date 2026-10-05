@@ -1,5 +1,31 @@
 @import "tailwindcss";
 
+/* Cores dos graficos (paleta validada para daltonismo e contraste sobre fundo branco) e de
+   status. Status nunca vira cor de serie: atrasado/hoje/ok sempre com icone e texto junto. */
+@theme {
+  --color-series-1: #2a78d6; /* Receitas, e a serie unica dos graficos de uma cor so */
+  --color-series-2: #eb6834; /* Despesas */
+  --color-series-track: #cde2fb; /* trilho do medidor: passo claro da mesma rampa da serie 1 */
+  --color-chart-grid: #e1e0d9;
+  --color-chart-baseline: #c3c2b7;
+  --color-chart-muted: #898781;
+  --color-status-good: #0ca30c;
+  --color-status-warning: #fab219;
+  --color-status-critical: #d03b3b;
+
+  --animate-fade-in: fade-in 200ms ease-out;
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}
+
 /* A base tipografica acompanha a viewport: 16px no celular, ~17px em 1920px e
    18px a partir de 2560px. Como quase toda medida do Tailwind e em rem, isso
    escala espacamento, altura de linha e icones junto com o texto, em vez de

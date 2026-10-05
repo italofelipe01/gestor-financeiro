@@ -1,136 +1,371 @@
-import { useState, useMemo, FormEvent } from 'react';
+import { FormEvent, useEffect, useMemo, useState } from 'react';
+import { CheckSquare, Edit2, ExternalLink, Lock, Plus, Search, Square, Trash2, X } from 'lucide-react';
 import { Transaction } from '../types';
-import { Search, Plus, Filter, CheckCircle, XCircle, Trash2, Edit2, X, DollarSign, Calendar, Tag, Layers, CheckSquare, Square } from 'lucide-react';
-import { formatDateBR, getTodayISO } from '../utils/finance';
+import {
+  dateDiffInDaysFromToday,
+  formatBRL,
+  formatDateBR,
+  getTodayISO,
+  normalizeText,
+  parseCurrencyBR,
+} from '../utils/finance';
+import { DueBadge } from './UpcomingDue';
 
 interface FinanceTableProps {
   transactions: Transaction[];
-  onTogglePaid: (id: string, currentPaid: boolean) => void;
-  onDeleteItem: (id: string) => void;
-  onAddItem: (item: Omit<Transaction, 'id'>) => void;
-  onUpdateItem: (id: string, item: Partial<Transaction>) => void;
+  readOnly: boolean;
+  readOnlyReason: string | null;
+  editUrl: string | null;
+  writeTarget: string | null; // onde um lancamento novo vai parar, ex.: aba "Maio" da planilha
+  onTogglePaid: (item: Transaction) => void;
+  onDeleteItem: (item: Transaction) => Promise<boolean>;
+  onAddItem: (item: Omit<Transaction, 'id'>) => Promise<boolean>;
+  onUpdateItem: (id: string, item: Partial<Transaction>) => Promise<boolean>;
+}
+
+type FilterType = 'todos' | 'receitas' | 'despesas' | 'pagas' | 'pendentes' | 'atrasadas';
+type SortType = 'vencimento' | 'planilha' | 'valor';
+
+const FILTERS: { id: FilterType; label: string }[] = [
+  { id: 'todos', label: 'Todos' },
+  { id: 'receitas', label: 'Receitas' },
+  { id: 'despesas', label: 'Despesas' },
+  { id: 'pendentes', label: 'Pendentes' },
+  { id: 'atrasadas', label: 'Atrasadas' },
+  { id: 'pagas', label: 'Pagas' },
+];
+
+const ITEMS_PER_PAGE = 15;
+
+interface FormState {
+  launch: string;
+  costCenter: 'Despesas' | 'Receitas';
+  category: string;
+  amount: string;
+  dueDate: string;
+  paid: boolean;
+  paymentDate: string;
+}
+
+const emptyForm = (): FormState => ({
+  launch: '',
+  costCenter: 'Despesas',
+  category: '',
+  amount: '',
+  dueDate: getTodayISO(),
+  paid: false,
+  paymentDate: '',
+});
+
+function toForm(t: Transaction): FormState {
+  return {
+    launch: t.launch,
+    costCenter: t.costCenter,
+    category: t.category,
+    amount: String(t.amount).replace('.', ','),
+    dueDate: t.dueDate,
+    paid: t.paid,
+    paymentDate: t.paymentDate ?? '',
+  };
+}
+
+function fromForm(form: FormState): Omit<Transaction, 'id'> {
+  return {
+    launch: form.launch.trim(),
+    costCenter: form.costCenter,
+    category: form.category.trim() || 'Geral',
+    // Aceita "1.234,56" e "1234.56".
+    amount: Math.abs(parseCurrencyBR(form.amount)),
+    dueDate: form.dueDate,
+    paid: form.paid,
+    paymentDate: form.paid ? form.paymentDate || getTodayISO() : null,
+  };
+}
+
+const inputClass =
+  'w-full text-sm border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none bg-white text-gray-800';
+const labelClass = 'block text-xs font-semibold text-gray-600 mb-1';
+
+function TransactionFields({
+  form,
+  setForm,
+  categories,
+  showPaymentDate,
+}: {
+  form: FormState;
+  setForm: (form: FormState) => void;
+  categories: string[];
+  showPaymentDate: boolean;
+}) {
+  return (
+    <>
+      <div className="sm:col-span-2">
+        <label className={labelClass} htmlFor="tx-launch">Lançamento</label>
+        <input
+          id="tx-launch"
+          type="text"
+          required
+          autoFocus
+          className={inputClass}
+          placeholder="Ex.: Aluguel, Supermercado"
+          value={form.launch}
+          onChange={(e) => setForm({ ...form, launch: e.target.value })}
+        />
+      </div>
+
+      <div>
+        <label className={labelClass} htmlFor="tx-cost-center">Centro de custo</label>
+        <select
+          id="tx-cost-center"
+          className={inputClass}
+          value={form.costCenter}
+          onChange={(e) => setForm({ ...form, costCenter: e.target.value as FormState['costCenter'] })}
+        >
+          <option value="Despesas">Despesa (−)</option>
+          <option value="Receitas">Receita (+)</option>
+        </select>
+      </div>
+
+      <div>
+        <label className={labelClass} htmlFor="tx-category">Segmento / categoria</label>
+        <input
+          id="tx-category"
+          type="text"
+          list="tx-categories"
+          className={inputClass}
+          placeholder="Ex.: Moradia"
+          value={form.category}
+          onChange={(e) => setForm({ ...form, category: e.target.value })}
+        />
+        <datalist id="tx-categories">
+          {categories.map((cat) => (
+            <option key={cat} value={cat} />
+          ))}
+        </datalist>
+      </div>
+
+      <div>
+        <label className={labelClass} htmlFor="tx-amount">Valor (R$)</label>
+        <input
+          id="tx-amount"
+          type="text"
+          inputMode="decimal"
+          required
+          className={`${inputClass} tabular-nums`}
+          placeholder="0,00"
+          value={form.amount}
+          onChange={(e) => setForm({ ...form, amount: e.target.value })}
+        />
+      </div>
+
+      <div>
+        <label className={labelClass} htmlFor="tx-due">Vencimento <span className="font-normal text-gray-400">(opcional)</span></label>
+        <input
+          id="tx-due"
+          type="date"
+          className={inputClass}
+          value={form.dueDate}
+          onChange={(e) => setForm({ ...form, dueDate: e.target.value })}
+        />
+      </div>
+
+      <div className="sm:col-span-2 flex flex-wrap items-center gap-4">
+        <label className="flex items-center gap-2 cursor-pointer select-none text-sm text-gray-700">
+          <input
+            type="checkbox"
+            className="w-4 h-4 accent-indigo-600"
+            checked={form.paid}
+            onChange={(e) => setForm({ ...form, paid: e.target.checked, paymentDate: e.target.checked ? form.paymentDate || getTodayISO() : '' })}
+          />
+          {form.costCenter === 'Receitas' ? 'Já recebido' : 'Já pago'}
+        </label>
+        {showPaymentDate && form.paid && (
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            em
+            <input
+              type="date"
+              className={`${inputClass} w-auto`}
+              value={form.paymentDate}
+              onChange={(e) => setForm({ ...form, paymentDate: e.target.value })}
+            />
+          </label>
+        )}
+      </div>
+    </>
+  );
 }
 
 export default function FinanceTable({
   transactions,
+  readOnly,
+  readOnlyReason,
+  editUrl,
+  writeTarget,
   onTogglePaid,
   onDeleteItem,
   onAddItem,
   onUpdateItem,
 }: FinanceTableProps) {
-  // UI states
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterType, setFilterType] = useState<'todos' | 'receitas' | 'despesas' | 'pagas' | 'pendentes'>('todos');
-  const [showAddForm, setShowAddForm] = useState(false);
-  const [editingItem, setEditingItem] = useState<Transaction | null>(null);
-
-  // Pagination states
+  const [filterType, setFilterType] = useState<FilterType>('todos');
+  const [sortType, setSortType] = useState<SortType>('vencimento');
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 10;
+  const [addForm, setAddForm] = useState<FormState | null>(null);
+  const [editing, setEditing] = useState<{ item: Transaction; form: FormState } | null>(null);
+  const [saving, setSaving] = useState(false);
 
-  // Add Item states
-  const [newItem, setNewItem] = useState({
-    launch: '',
-    costCenter: 'Despesas' as 'Despesas' | 'Receitas',
-    category: '',
-    amount: '',
-    dueDate: getTodayISO(),
-    paid: false,
-  });
+  const categoriesList = useMemo(
+    () => Array.from(new Set(transactions.map((t) => t.category))).filter(Boolean).sort(),
+    [transactions],
+  );
 
-  // Unique categories for auto-suggestions inside form
-  const categoriesList = useMemo(() => {
-    return Array.from(new Set(transactions.map((t) => t.category))).filter(Boolean).sort();
-  }, [transactions]);
-
-  // Combined search and filters
   const filteredTransactions = useMemo(() => {
-    return transactions.filter((t) => {
-      // Search matching
-      const matchesSearch =
-        t.launch.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        t.category.toLowerCase().includes(searchTerm.toLowerCase());
+    const term = normalizeText(searchTerm);
+    const list = transactions.filter((t) => {
+      const matchesSearch = !term || normalizeText(t.launch).includes(term) || normalizeText(t.category).includes(term);
+      if (!matchesSearch) return false;
 
-      // Type matching
-      let matchesFilter = true;
-      if (filterType === 'receitas') matchesFilter = t.costCenter === 'Receitas';
-      else if (filterType === 'despesas') matchesFilter = t.costCenter === 'Despesas';
-      else if (filterType === 'pagas') matchesFilter = t.costCenter === 'Despesas' && t.paid;
-      else if (filterType === 'pendentes') matchesFilter = t.costCenter === 'Despesas' && !t.paid;
-
-      return matchesSearch && matchesFilter;
+      const isExpense = t.costCenter === 'Despesas';
+      switch (filterType) {
+        case 'receitas':
+          return !isExpense;
+        case 'despesas':
+          return isExpense;
+        case 'pagas':
+          return isExpense && t.paid;
+        case 'pendentes':
+          return isExpense && !t.paid;
+        case 'atrasadas': {
+          const diff = dateDiffInDaysFromToday(t.dueDate);
+          return isExpense && !t.paid && diff !== null && diff < 0;
+        }
+        default:
+          return true;
+      }
     });
-  }, [transactions, searchTerm, filterType]);
 
-  // paginated results
-  const paginatedTransactions = useMemo(() => {
-    const start = (currentPage - 1) * itemsPerPage;
-    return filteredTransactions.slice(start, start + itemsPerPage);
-  }, [filteredTransactions, currentPage]);
+    if (sortType === 'valor') return [...list].sort((a, b) => b.amount - a.amount);
+    if (sortType === 'vencimento') {
+      // Sem vencimento vai para o fim.
+      return [...list].sort((a, b) => (a.dueDate || '9999').localeCompare(b.dueDate || '9999'));
+    }
+    return [...list].sort(
+      (a, b) => (a.source?.sheetId ?? 0) - (b.source?.sheetId ?? 0) || (a.source?.row ?? 0) - (b.source?.row ?? 0),
+    );
+  }, [transactions, searchTerm, filterType, sortType]);
 
-  const totalPages = Math.ceil(filteredTransactions.length / itemsPerPage);
+  const totalPages = Math.max(1, Math.ceil(filteredTransactions.length / ITEMS_PER_PAGE));
+  const page = Math.min(currentPage, totalPages);
+  const paginatedTransactions = filteredTransactions.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE);
 
-  const resetAddForm = () => {
-    setNewItem({
-      launch: '',
-      costCenter: 'Despesas',
-      category: '',
-      amount: '',
-      dueDate: getTodayISO(),
-      paid: false,
-    });
-    setShowAddForm(false);
-  };
+  useEffect(() => {
+    if (!editing) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setEditing(null);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [editing]);
 
-  const handleAddNewItemSubmit = (e: FormEvent) => {
+  const handleAddSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!newItem.launch.trim() || !newItem.amount) return;
-
-    onAddItem({
-      launch: newItem.launch.trim(),
-      costCenter: newItem.costCenter,
-      category: newItem.category.trim() || 'Geral',
-      amount: parseFloat(newItem.amount) || 0,
-      paid: newItem.paid,
-      dueDate: newItem.dueDate,
-      paymentDate: newItem.paid ? newItem.dueDate : null,
-    });
-
-    resetAddForm();
+    if (!addForm || !addForm.launch.trim() || !addForm.amount) return;
+    setSaving(true);
+    const ok = await onAddItem(fromForm(addForm));
+    setSaving(false);
+    if (ok) setAddForm(null);
   };
 
-  const handleUpdateItemSubmit = (e: FormEvent) => {
+  const handleEditSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (!editingItem || !editingItem.launch.trim() || !editingItem.amount) return;
-
-    onUpdateItem(editingItem.id, {
-      launch: editingItem.launch.trim(),
-      costCenter: editingItem.costCenter,
-      category: editingItem.category.trim() || 'Geral',
-      amount: parseFloat(editingItem.amount.toString()) || 0,
-      paid: editingItem.paid,
-      dueDate: editingItem.dueDate,
-      paymentDate: editingItem.paid ? (editingItem.paymentDate || getTodayISO()) : null,
-    });
-
-    setEditingItem(null);
+    if (!editing || !editing.form.launch.trim() || !editing.form.amount) return;
+    setSaving(true);
+    const ok = await onUpdateItem(editing.item.id, fromForm(editing.form));
+    setSaving(false);
+    if (ok) setEditing(null);
   };
 
-  // formatting currency helper
-  const fmt = (val: number) => {
-    return new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
+  const handleDelete = async (item: Transaction) => {
+    const where = item.source ? ' Isso apaga a linha na planilha.' : '';
+    if (!window.confirm(`Apagar o lançamento "${item.launch}"?${where}`)) return;
+    await onDeleteItem(item);
   };
+
+  const statusCell = (tx: Transaction) => {
+    if (tx.costCenter === 'Receitas') {
+      return <span className="text-xs text-gray-500">{tx.paid ? 'Recebida' : 'Receita'}</span>;
+    }
+    if (tx.paid) {
+      return <span className="text-xs text-gray-500">Pago{tx.paymentDate ? ` em ${formatDateBR(tx.paymentDate).slice(0, 5)}` : ''}</span>;
+    }
+    const diff = dateDiffInDaysFromToday(tx.dueDate);
+    if (diff !== null && diff <= 7) return <DueBadge daysUntilDue={diff} />;
+    return <span className="text-xs text-gray-500">Pendente</span>;
+  };
+
+  const paidToggle = (tx: Transaction) => (
+    <button
+      onClick={() => onTogglePaid(tx)}
+      disabled={readOnly}
+      className="p-1 rounded-lg transition hover:bg-slate-100 disabled:hover:bg-transparent disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+      title={readOnly ? 'Somente leitura' : tx.paid ? 'Marcar como pendente' : 'Marcar como pago'}
+      aria-label={`${tx.paid ? 'Desmarcar' : 'Marcar'} ${tx.launch} como pago`}
+    >
+      {tx.paid ? <CheckSquare className="w-5 h-5 text-emerald-600" /> : <Square className="w-5 h-5 text-gray-300" />}
+    </button>
+  );
+
+  const rowActions = (tx: Transaction) =>
+    readOnly ? null : (
+      <div className="flex items-center justify-end gap-1">
+        <button
+          onClick={() => setEditing({ item: tx, form: toForm(tx) })}
+          className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-lg hover:bg-slate-100 transition cursor-pointer"
+          title="Editar lançamento"
+          aria-label={`Editar ${tx.launch}`}
+        >
+          <Edit2 className="w-4 h-4" />
+        </button>
+        <button
+          onClick={() => handleDelete(tx)}
+          className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-slate-100 transition cursor-pointer"
+          title="Apagar lançamento"
+          aria-label={`Apagar ${tx.launch}`}
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
+      </div>
+    );
 
   return (
-    <div className="space-y-6" id="finance-table-view">
-      {/* Search, Filter menu & Add Button */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-gray-100 shadow-xs">
+    <div className="space-y-4 sm:space-y-6 motion-safe:animate-fade-in" id="finance-table-view">
+      {readOnly && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <p className="flex items-start gap-2">
+            <Lock className="w-4 h-4 mt-0.5 shrink-0" aria-hidden />
+            <span>{readOnlyReason}</span>
+          </p>
+          {editUrl && (
+            <a
+              href={editUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1.5 shrink-0 rounded-xl bg-white border border-amber-200 px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              Abrir planilha
+            </a>
+          )}
+        </div>
+      )}
+
+      {/* Busca, filtros e ordenacao */}
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 bg-white p-3 sm:p-4 rounded-2xl border border-gray-100 shadow-xs">
         <div className="relative flex-1">
-          <Search className="absolute left-3.5 top-3 w-4 h-4 text-gray-400" />
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" aria-hidden />
           <input
-            type="text"
-            className="w-full text-sm border border-gray-200/80 rounded-xl pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-700 bg-slate-50/20"
+            type="search"
+            className="w-full text-sm border border-gray-200 rounded-xl pl-10 pr-4 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-700"
             placeholder="Pesquisar por descrição ou categoria..."
+            aria-label="Pesquisar lançamentos"
             value={searchTerm}
             onChange={(e) => {
               setSearchTerm(e.target.value);
@@ -140,435 +375,230 @@ export default function FinanceTable({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          {/* Quick Filter tabs */}
-          <div className="inline-flex rounded-lg bg-gray-100 p-1 text-xs">
-            <button
-              onClick={() => { setFilterType('todos'); setCurrentPage(1); }}
-              className={`px-3 py-1.5 rounded-md font-medium transition cursor-pointer ${
-                filterType === 'todos' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-900'
-              }`}
-            >
-              Todos
-            </button>
-            <button
-              onClick={() => { setFilterType('receitas'); setCurrentPage(1); }}
-              className={`px-3 py-1.5 rounded-md font-medium transition cursor-pointer ${
-                filterType === 'receitas' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-900'
-              }`}
-            >
-              Receitas
-            </button>
-            <button
-              onClick={() => { setFilterType('despesas'); setCurrentPage(1); }}
-              className={`px-3 py-1.5 rounded-md font-medium transition cursor-pointer ${
-                filterType === 'despesas' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-900'
-              }`}
-            >
-              Despesas
-            </button>
-            <button
-              onClick={() => { setFilterType('pagas'); setCurrentPage(1); }}
-              className={`px-3 py-1.5 rounded-md font-medium transition cursor-pointer ${
-                filterType === 'pagas' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-900'
-              }`}
-            >
-              Pagas
-            </button>
-            <button
-              onClick={() => { setFilterType('pendentes'); setCurrentPage(1); }}
-              className={`px-3 py-1.5 rounded-md font-medium transition cursor-pointer ${
-                filterType === 'pendentes' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-900'
-              }`}
-            >
-              Pendentes
-            </button>
+          <div className="flex rounded-lg bg-gray-100 p-1 text-xs overflow-x-auto max-w-full" role="tablist" aria-label="Filtrar lançamentos">
+            {FILTERS.map((f) => (
+              <button
+                key={f.id}
+                role="tab"
+                aria-selected={filterType === f.id}
+                onClick={() => {
+                  setFilterType(f.id);
+                  setCurrentPage(1);
+                }}
+                className={`px-2.5 sm:px-3 py-1.5 rounded-md font-medium whitespace-nowrap transition cursor-pointer ${
+                  filterType === f.id ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-900'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
           </div>
 
-          <button
-            onClick={() => setShowAddForm(true)}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs sm:text-sm font-medium px-4 py-2 rounded-xl transition duration-150 flex items-center gap-1 cursor-pointer"
+          <select
+            value={sortType}
+            onChange={(e) => setSortType(e.target.value as SortType)}
+            className="text-xs border border-gray-200 rounded-lg px-2 py-2 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            aria-label="Ordenar por"
           >
-            <Plus className="w-4 h-4" />
-            Adicionar Novo
-          </button>
+            <option value="vencimento">Por vencimento</option>
+            <option value="planilha">Ordem da planilha</option>
+            <option value="valor">Maior valor</option>
+          </select>
+
+          {!readOnly && (
+            <button
+              onClick={() => setAddForm(addForm ? null : emptyForm())}
+              className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs sm:text-sm font-medium px-4 py-2 rounded-xl transition flex items-center gap-1 cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              Adicionar
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Inline Form block: Add Item */}
-      {showAddForm && (
-        <div className="bg-white p-6 rounded-2xl border border-dashed border-indigo-200 shadow-md transform transition-all duration-200">
-          <div className="flex justify-between items-center pb-4 mb-4 border-b border-gray-150">
-            <h3 className="font-bold text-gray-900 flex items-center gap-2 text-base">
-              <Plus className="w-5 h-5 text-indigo-500" />
-              Adicionar Lançamento Financeiro
-            </h3>
-            <button onClick={resetAddForm} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg">
+      {addForm && (
+        <form
+          onSubmit={handleAddSubmit}
+          className="bg-white p-5 sm:p-6 rounded-2xl border border-dashed border-indigo-200 shadow-md motion-safe:animate-fade-in"
+        >
+          <div className="flex justify-between items-start gap-3 pb-3 mb-4 border-b border-gray-100">
+            <div>
+              <h3 className="font-bold text-gray-900 text-base">Novo lançamento</h3>
+              {writeTarget && <p className="text-xs text-gray-500 mt-0.5">Será incluído {writeTarget}.</p>}
+            </div>
+            <button type="button" onClick={() => setAddForm(null)} className="text-gray-400 hover:text-gray-600 p-1 rounded-lg" aria-label="Fechar">
               <X className="w-5 h-5" />
             </button>
           </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <TransactionFields form={addForm} setForm={setAddForm} categories={categoriesList} showPaymentDate={false} />
+          </div>
+          <div className="flex justify-end gap-2 pt-4 mt-4 border-t border-gray-100">
+            <button type="button" onClick={() => setAddForm(null)} className="px-4 py-2 text-xs font-semibold rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200 cursor-pointer">
+              Cancelar
+            </button>
+            <button type="submit" disabled={saving} className="px-4 py-2 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs cursor-pointer disabled:opacity-60">
+              {saving ? 'Salvando…' : 'Salvar lançamento'}
+            </button>
+          </div>
+        </form>
+      )}
 
-          <form onSubmit={handleAddNewItemSubmit} className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-            <div>
-              <label className="block text-xs font-bold text-gray-600 uppercase tracking-widest mb-1">
-                Lançamento
-              </label>
-              <input
-                type="text"
-                required
-                className="w-full text-xs border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                placeholder="Ex: Aluguel, Supermercado"
-                value={newItem.launch}
-                onChange={(e) => setNewItem({ ...newItem, launch: e.target.value })}
+      {editing && (
+        <div
+          className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 z-50"
+          onClick={(e) => e.target === e.currentTarget && setEditing(null)}
+        >
+          <form
+            onSubmit={handleEditSubmit}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-dialog-title"
+            className="bg-white rounded-t-2xl sm:rounded-2xl max-w-lg w-full p-5 sm:p-6 shadow-2xl border border-gray-100 motion-safe:animate-fade-in max-h-[95vh] overflow-y-auto"
+          >
+            <div className="flex justify-between items-center border-b border-gray-100 pb-3 mb-4">
+              <h3 id="edit-dialog-title" className="font-bold text-gray-900 text-base flex items-center gap-2">
+                <Edit2 className="w-5 h-5 text-indigo-500" aria-hidden />
+                Editar lançamento
+              </h3>
+              <button type="button" onClick={() => setEditing(null)} className="text-gray-400 hover:text-gray-600 p-1" aria-label="Fechar">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <TransactionFields
+                form={editing.form}
+                setForm={(form) => setEditing({ ...editing, form })}
+                categories={categoriesList}
+                showPaymentDate
               />
             </div>
-
-            <div>
-              <label className="block text-xs font-bold text-gray-600 uppercase tracking-widest mb-1">
-                Centro de Custo
-              </label>
-              <select
-                className="w-full text-xs border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                value={newItem.costCenter}
-                onChange={(e) => setNewItem({ ...newItem, costCenter: e.target.value as 'Despesas' | 'Receitas' })}
-              >
-                <option value="Despesas">Despesas (-)</option>
-                <option value="Receitas">Receitas (+)</option>
-              </select>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-gray-600 uppercase tracking-widest mb-1">
-                Segmento / Categoria
-              </label>
-              <input
-                type="text"
-                list="add-categories-suggestions"
-                required
-                className="w-full text-xs border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                placeholder="Ex: Moradia, Alimentação"
-                value={newItem.category}
-                onChange={(e) => setNewItem({ ...newItem, category: e.target.value })}
-              />
-              <datalist id="add-categories-suggestions">
-                {categoriesList.map((cat) => (
-                  <option key={cat} value={cat} />
-                ))}
-              </datalist>
-            </div>
-
-            <div>
-              <label className="block text-xs font-bold text-gray-600 uppercase tracking-widest mb-1">
-                Expectativa (Valor R$)
-              </label>
-              <div className="relative">
-                <span className="absolute left-3 top-2 text-gray-400 text-xs font-bold">R$</span>
-                <input
-                  type="number"
-                  step="0.01"
-                  required
-                  className="w-full text-xs border border-gray-200 rounded-lg pl-8 pr-3 py-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                  placeholder="0,00"
-                  value={newItem.amount}
-                  onChange={(e) => setNewItem({ ...newItem, amount: e.target.value })}
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="block text-xs font-bold text-gray-600 uppercase tracking-widest mb-1">
-                  Vencimento
-                </label>
-                <input
-                  type="date"
-                  required
-                  className="w-full text-xs border border-gray-200 rounded-lg px-2 py-2 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                  value={newItem.dueDate}
-                  onChange={(e) => setNewItem({ ...newItem, dueDate: e.target.value })}
-                />
-              </div>
-
-              <div className="flex flex-col justify-end">
-                <label className="flex items-center gap-2 cursor-pointer pb-2 pl-1 select-none text-xs text-gray-650">
-                  <input
-                    type="checkbox"
-                    className="w-4 h-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
-                    checked={newItem.paid}
-                    onChange={(e) => setNewItem({ ...newItem, paid: e.target.checked })}
-                  />
-                  <span>Já Pago?</span>
-                </label>
-              </div>
-            </div>
-
-            <div className="sm:col-span-2 lg:col-span-5 flex justify-end gap-2 pt-3 border-t border-gray-100">
-              <button
-                type="button"
-                onClick={resetAddForm}
-                className="px-4 py-2 text-xs font-semibold rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-500 border border-slate-250 cursor-pointer"
-              >
+            {editing.item.source && (
+              <p className="mt-4 text-xs text-gray-500">
+                Linha {editing.item.source.row}
+                {editing.item.source.tab ? ` da aba "${editing.item.source.tab}"` : ''} da planilha.
+              </p>
+            )}
+            <div className="flex justify-end gap-2 pt-4 mt-4 border-t border-gray-100">
+              <button type="button" onClick={() => setEditing(null)} className="px-4 py-2 text-slate-600 border border-slate-200 text-xs font-semibold rounded-xl hover:bg-slate-50 cursor-pointer">
                 Cancelar
               </button>
-              <button
-                type="submit"
-                className="px-4 py-2 text-xs font-semibold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white shadow-xs cursor-pointer"
-              >
-                Salvar Lançamento
+              <button type="submit" disabled={saving} className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-xl shadow-md cursor-pointer disabled:opacity-60">
+                {saving ? 'Salvando…' : 'Salvar alterações'}
               </button>
             </div>
           </form>
         </div>
       )}
 
-      {/* Editing Item Modal Panel */}
-      {editingItem && (
-        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-xs flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-gray-100 animate-in fade-in zoom-in duration-150">
-            <div className="flex justify-between items-center border-b border-gray-100 pb-4 mb-4">
-              <h3 className="font-bold text-gray-900 text-base flex items-center gap-2">
-                <Edit2 className="w-5 h-5 text-indigo-500" />
-                Editar Lançamento
-              </h3>
-              <button onClick={() => setEditingItem(null)} className="text-gray-400 hover:text-gray-600 p-1">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleUpdateItemSubmit} className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="col-span-2">
-                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Nome do Item</label>
-                  <input
-                    type="text"
-                    required
-                    className="w-full text-xs border border-gray-200 rounded-lg p-2.5 focus:ring-2 focus:ring-open focus:outline-none"
-                    value={editingItem.launch}
-                    onChange={(e) => setEditingItem({ ...editingItem, launch: e.target.value })}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Centro de Custo</label>
-                  <select
-                    className="w-full text-xs border border-gray-200 rounded-lg p-2.5 focus:ring-2 focus:ring-open focus:outline-none"
-                    value={editingItem.costCenter}
-                    onChange={(e) => setEditingItem({ ...editingItem, costCenter: e.target.value as 'Despesas' | 'Receitas' })}
-                  >
-                    <option value="Despesas">Despesas (-)</option>
-                    <option value="Receitas">Receitas (+)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Categoria / Segmento</label>
-                  <input
-                    type="text"
-                    required
-                    className="w-full text-xs border border-gray-200 rounded-lg p-2.5 focus:ring-2 focus:ring-open focus:outline-none"
-                    value={editingItem.category}
-                    onChange={(e) => setEditingItem({ ...editingItem, category: e.target.value })}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Expectativa (R$)</label>
-                  <input
-                    type="number"
-                    step="0.01"
-                    required
-                    className="w-full text-xs border border-gray-200 rounded-lg p-2.5 focus:ring-2 focus:ring-open focus:outline-none"
-                    value={editingItem.amount}
-                    onChange={(e) => setEditingItem({ ...editingItem, amount: parseFloat(e.target.value) || 0 })}
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-gray-700 uppercase mb-1">Vencimento</label>
-                  <input
-                    type="date"
-                    required
-                    className="w-full text-xs border border-gray-200 rounded-lg p-2.5 focus:ring-2 focus:ring-open focus:outline-none"
-                    value={editingItem.dueDate}
-                    onChange={(e) => setEditingItem({ ...editingItem, dueDate: e.target.value })}
-                  />
-                </div>
-
-                <div className="col-span-2 pt-2">
-                  <label className="flex items-center gap-2 cursor-pointer p-2 rounded-lg bg-slate-50 border border-slate-200">
-                    <input
-                      type="checkbox"
-                      className="w-4 h-4 text-indigo-650 border-gray-300 rounded focus:ring-indigo-505"
-                      checked={editingItem.paid}
-                      onChange={(e) => setEditingItem({ ...editingItem, paid: e.target.checked })}
-                    />
-                    <span className="text-xs font-semibold text-gray-700">Declarar este lançamento como Pago / Liquidado</span>
-                  </label>
-                </div>
-              </div>
-
-              <div className="flex justify-end gap-2 pt-4 border-t border-gray-100">
-                <button
-                  type="button"
-                  onClick={() => setEditingItem(null)}
-                  className="px-4 py-2 hover:bg-slate-50 text-slate-500 border border-slate-200 text-xs font-semibold rounded-xl cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-xl shadow-md cursor-pointer"
-                >
-                  Salvar Alterações
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Responsive Ledger List Table */}
       <div className="bg-white rounded-2xl border border-gray-100 shadow-xs overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-sm">
-            <thead>
-              <tr className="bg-slate-50/75 border-b border-gray-100 text-[11px] font-bold text-gray-400 uppercase tracking-widest">
-                <th className="p-4 w-12 text-center">Pago</th>
-                <th className="p-4 min-w-[150px]">Lançamento</th>
-                <th className="p-4">Centro</th>
-                <th className="p-4">Segmento de Operação</th>
-                <th className="p-4">Vencimento</th>
-                <th className="p-4 pr-6 text-right">Expectativa (R$)</th>
-                <th className="p-4 text-center">Ações</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-50 text-gray-700">
-              {paginatedTransactions.length === 0 ? (
-                <tr>
-                  <td colSpan={7} className="p-12 text-center text-slate-400 font-medium whitespace-nowrap">
-                    Nenhum lançamento encontrado correspondendo aos termos e filtros buscados.
-                  </td>
-                </tr>
-              ) : (
-                paginatedTransactions.map((tx) => {
-                  const isExpense = tx.costCenter === 'Despesas';
-                  return (
-                    <tr
-                      key={tx.id}
-                      className={`hover:bg-slate-50/50 transition duration-150 ${
-                        tx.paid && isExpense ? 'bg-emerald-50/5' : ''
-                      }`}
-                    >
-                      {/* Paid Toggle checkbox */}
-                      <td className="p-4 text-center">
-                        {isExpense ? (
-                          <button
-                            onClick={() => onTogglePaid(tx.id, tx.paid)}
-                            className="p-1 hover:bg-slate-100 rounded-lg text-gray-450 transition"
-                            title={tx.paid ? 'Marcar como Pendente' : 'Marcar como Pago'}
-                          >
-                            {tx.paid ? (
-                              <CheckSquare className="w-5 h-5 text-emerald-500 fill-emerald-50" />
-                            ) : (
-                              <Square className="w-5 h-5 text-gray-300" />
-                            )}
-                          </button>
+        {paginatedTransactions.length === 0 ? (
+          <p className="p-12 text-center text-sm text-slate-400 font-medium">
+            Nenhum lançamento encontrado com esses filtros.
+          </p>
+        ) : (
+          <>
+            {/* Celular: cartoes */}
+            <ul className="md:hidden divide-y divide-gray-100">
+              {paginatedTransactions.map((tx) => (
+                <li key={tx.id} className="flex items-start gap-3 p-4">
+                  {tx.costCenter === 'Despesas' ? paidToggle(tx) : <span className="w-7 shrink-0" aria-hidden />}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="font-semibold text-gray-900 text-sm truncate">{tx.launch}</p>
+                      <p className={`text-sm font-semibold tabular-nums shrink-0 ${tx.costCenter === 'Receitas' ? 'text-blue-700' : 'text-gray-900'}`}>
+                        {tx.costCenter === 'Receitas' ? '+' : '−'} {formatBRL(tx.amount)}
+                      </p>
+                    </div>
+                    <p className="text-xs text-gray-500 truncate">
+                      {tx.category} · {tx.dueDate ? `vence ${formatDateBR(tx.dueDate)}` : 'sem vencimento'}
+                    </p>
+                    <div className="mt-1.5 flex items-center justify-between gap-2">
+                      {statusCell(tx)}
+                      {rowActions(tx)}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+
+            {/* Tela media em diante: tabela */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-left border-collapse text-sm">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-gray-100 text-xs font-semibold text-gray-500">
+                    <th className="p-3 pl-4 w-12 text-center">Pago</th>
+                    <th className="p-3 min-w-[160px]">Lançamento</th>
+                    <th className="p-3">Centro</th>
+                    <th className="p-3">Segmento</th>
+                    <th className="p-3">Vencimento</th>
+                    <th className="p-3">Situação</th>
+                    <th className="p-3 text-right">Valor</th>
+                    {!readOnly && <th className="p-3 pr-4 text-right">Ações</th>}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50 text-gray-700">
+                  {paginatedTransactions.map((tx) => (
+                    <tr key={tx.id} className="hover:bg-slate-50/60 transition">
+                      <td className="p-3 pl-4 text-center">
+                        {tx.costCenter === 'Despesas' ? (
+                          paidToggle(tx)
                         ) : (
-                          <div className="flex items-center justify-center">
-                            <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" title="Receita sempre considerada quitada"></span>
-                          </div>
+                          <span className="text-[11px] text-gray-400" title="Receita">—</span>
                         )}
                       </td>
-
-                      {/* Launch Name */}
-                      <td className="p-4 font-semibold text-gray-900">
-                        <span className="flex flex-col">
-                          <span>{tx.launch}</span>
-                          {!tx.paid && isExpense && (
-                            <span className="inline-block sm:hidden text-[10px] text-rose-500 font-bold uppercase tracking-wider mt-0.5">Falta Pagar</span>
-                          )}
+                      <td className="p-3 font-semibold text-gray-900">{tx.launch}</td>
+                      <td className="p-3">
+                        <span
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${
+                            tx.costCenter === 'Receitas' ? 'bg-blue-50 text-blue-800' : 'bg-orange-50 text-orange-800'
+                          }`}
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full ${tx.costCenter === 'Receitas' ? 'bg-series-1' : 'bg-series-2'}`} aria-hidden />
+                          {tx.costCenter === 'Receitas' ? 'Receita' : 'Despesa'}
                         </span>
                       </td>
-
-                      {/* Cost Center badge */}
-                      <td className="p-4">
-                        <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold ${
-                          tx.costCenter === 'Receitas'
-                            ? 'bg-emerald-50 text-emerald-700'
-                            : 'bg-indigo-50 text-indigo-700'
-                        }`}>
-                          <span className={`w-1.5 h-1.5 rounded-full ${tx.costCenter === 'Receitas' ? 'bg-emerald-500' : 'bg-indigo-500'}`}></span>
-                          {tx.costCenter}
-                        </span>
-                      </td>
-
-                      {/* Category segment */}
-                      <td className="p-4 text-xs font-medium text-gray-500 bg-slate-50/1 p-1 pr-3 max-w-[150px] truncate">
-                        {tx.category}
-                      </td>
-
-                      {/* Due Date */}
-                      <td className="p-4 font-mono text-xs text-cool-600">
-                        {formatDateBR(tx.dueDate)}
-                      </td>
-
-                      {/* Amount Expectativa */}
-                      <td className={`p-4 pr-6 text-right font-bold text-xs ${
-                        tx.costCenter === 'Receitas' ? 'text-emerald-600' : 'text-slate-800'
-                      }`}>
-                        {fmt(tx.amount)}
-                      </td>
-
-                      {/* Actions CRUD buttons */}
-                      <td className="p-4">
-                        <div className="flex items-center justify-center gap-1">
-                          <button
-                            onClick={() => setEditingItem(tx)}
-                            className="p-1 text-slate-400 hover:text-indigo-600 rounded-lg hover:bg-slate-100 transition duration-150 cursor-pointer"
-                            title="Editar lançamento"
-                          >
-                            <Edit2 className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => onDeleteItem(tx.id)}
-                            className="p-1 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-slate-100 transition duration-150 cursor-pointer"
-                            title="Apagar lançamento"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </td>
+                      <td className="p-3 text-xs text-gray-500 max-w-[180px] truncate">{tx.category}</td>
+                      <td className="p-3 text-xs text-gray-600 tabular-nums">{formatDateBR(tx.dueDate) || '—'}</td>
+                      <td className="p-3">{statusCell(tx)}</td>
+                      <td className="p-3 text-right font-semibold tabular-nums text-gray-900">{formatBRL(tx.amount)}</td>
+                      {!readOnly && <td className="p-3 pr-4">{rowActions(tx)}</td>}
                     </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
 
-        {/* Footer info & pagination */}
-        {totalPages > 1 && (
-          <div className="bg-slate-50 px-6 py-4 flex items-center justify-between border-t border-gray-150">
-            <span className="text-xs text-gray-500 font-medium">
-              Mostrando página <strong className="text-gray-950 font-semibold">{currentPage}</strong> de <strong className="text-gray-950 font-semibold">{totalPages}</strong> ({filteredTransactions.length} registros filtrados)
-            </span>
-            <div className="flex items-center gap-1 text-xs">
+        <div className="bg-slate-50 px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-2 border-t border-gray-100 text-xs text-gray-500">
+          <span>
+            {filteredTransactions.length} {filteredTransactions.length === 1 ? 'lançamento' : 'lançamentos'} ·{' '}
+            {formatBRL(filteredTransactions.reduce((acc, t) => acc + (t.costCenter === 'Receitas' ? t.amount : -t.amount), 0))} de saldo
+          </span>
+          {totalPages > 1 && (
+            <div className="flex items-center gap-1">
               <button
-                disabled={currentPage === 1}
-                onClick={() => setCurrentPage((c) => Math.max(1, c - 1))}
-                className="px-3 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 transition duration-150 disabled:opacity-40 font-semibold cursor-pointer"
+                disabled={page === 1}
+                onClick={() => setCurrentPage(page - 1)}
+                className="px-3 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-40 font-semibold cursor-pointer"
               >
                 Anterior
               </button>
+              <span className="px-2">
+                {page} / {totalPages}
+              </span>
               <button
-                disabled={currentPage === totalPages}
-                onClick={() => setCurrentPage((c) => Math.min(totalPages, c + 1))}
-                className="px-3 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 transition duration-150 disabled:opacity-40 font-semibold cursor-pointer"
+                disabled={page === totalPages}
+                onClick={() => setCurrentPage(page + 1)}
+                className="px-3 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-600 hover:bg-gray-50 disabled:opacity-40 font-semibold cursor-pointer"
               >
                 Próxima
               </button>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );

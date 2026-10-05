@@ -1,6 +1,38 @@
-import { useState, useEffect } from 'react';
+import { ReactNode, useState, useEffect } from 'react';
 import { TelegramConfig } from '../types';
-import { Send, Settings, Bell, CheckCircle2, AlertCircle, Eye, RefreshCw, Smartphone } from 'lucide-react';
+import { Send, Settings, Bell, CheckCircle2, AlertCircle, RefreshCw, Smartphone } from 'lucide-react';
+
+const decodeEntities = (text: string) =>
+  text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+
+/**
+ * Renderiza o HTML do Telegram (so <b> e <i>) como elementos React. O texto vem da planilha:
+ * nunca passa por innerHTML, entao um "<img onerror>" num nome de lancamento nao executa.
+ */
+function renderTelegramHtml(html: string): ReactNode {
+  if (!html) return 'Carregando estrutura de texto...';
+  const nodes: ReactNode[] = [];
+  let bold = 0;
+  let italic = 0;
+  let last = 0;
+  const pushText = (text: string) => {
+    if (!text) return;
+    nodes.push(
+      <span key={nodes.length} className={`${bold ? 'font-semibold text-white' : ''} ${italic ? 'italic text-slate-300' : ''}`}>
+        {decodeEntities(text)}
+      </span>,
+    );
+  };
+  for (const match of html.matchAll(/<(\/?)(b|i)>/g)) {
+    pushText(html.slice(last, match.index));
+    const delta = match[1] ? -1 : 1;
+    if (match[2] === 'b') bold = Math.max(0, bold + delta);
+    else italic = Math.max(0, italic + delta);
+    last = (match.index ?? 0) + match[0].length;
+  }
+  pushText(html.slice(last));
+  return <div className="font-sans text-xs sm:text-sm text-slate-100 whitespace-pre-line leading-relaxed">{nodes}</div>;
+}
 
 export default function TelegramConfigPanel() {
   const [configs, setConfigs] = useState<TelegramConfig>({
@@ -89,7 +121,7 @@ export default function TelegramConfigPanel() {
       });
       const data = await res.json();
       if (res.ok) {
-        setStatusMsg({ type: 'success', text: '🎉 WhatsApp/Telegram: Mensagem de teste enviada com sucesso! Verifique seu app.' });
+        setStatusMsg({ type: 'success', text: 'Mensagem de teste enviada! Confira o Telegram.' });
       } else {
         setStatusMsg({ type: 'error', text: data.error || 'Erro desconhecido ao testar bot do Telegram.' });
       }
@@ -124,29 +156,6 @@ export default function TelegramConfigPanel() {
     } finally {
       setNotifying(false);
     }
-  };
-
-  // Simple Markdown interpreter for mock card rendering
-  const renderMockTelegramText = (text: string) => {
-    if (!text) return 'Carregando estrutura de texto...';
-    // replacement rules for basic bold and inline bullet icons
-    let html = text
-      .split('\n')
-      .map(line => {
-        let l = line;
-        // Bold formatting
-        l = l.replace(/\*(.*?)\*/g, '<strong class="font-semibold text-white">$1</strong>');
-        // Bullet style
-        if (l.trim().startsWith('•')) {
-          l = `<div class="pl-2 flex items-start gap-1 text-slate-300"><span>•</span><span>${l.substring(1)}</span></div>`;
-        } else {
-          l = `<div>${l}</div>`;
-        }
-        return l;
-      })
-      .join('\n');
-
-    return <div className="space-y-1 font-sans text-xs sm:text-sm text-slate-100 whitespace-pre-line" dangerouslySetInnerHTML={{ __html: html }} />;
   };
 
   return (
@@ -188,7 +197,7 @@ export default function TelegramConfigPanel() {
                 onChange={(e) => setConfigs({ ...configs, botToken: e.target.value })}
               />
               <p className="text-[10px] text-gray-400 mt-1">
-                Criado conversando com o <a href="https://t.me/BotFather" target="_blank" className="underline text-indigo-500 font-medium">@BotFather</a> no Telegram (comando `/newbot`).
+                Criado conversando com o <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer" className="underline text-indigo-500 font-medium">@BotFather</a> no Telegram (comando `/newbot`).
               </p>
             </div>
 
@@ -204,7 +213,7 @@ export default function TelegramConfigPanel() {
                 onChange={(e) => setConfigs({ ...configs, chatId: e.target.value })}
               />
               <p className="text-[10px] text-gray-400 mt-1">
-                Consiga seu Chat ID enviando qualquer mensagem para o bot <a href="https://t.me/userinfobot" target="_blank" className="underline text-indigo-500 font-medium">@userinfobot</a>.
+                Consiga seu Chat ID enviando qualquer mensagem para o bot <a href="https://t.me/userinfobot" target="_blank" rel="noopener noreferrer" className="underline text-indigo-500 font-medium">@userinfobot</a>.
               </p>
             </div>
 
@@ -219,6 +228,9 @@ export default function TelegramConfigPanel() {
                   value={configs.dailyTime}
                   onChange={(e) => setConfigs({ ...configs, dailyTime: e.target.value })}
                 />
+                <p className="text-[10px] text-gray-400 mt-1">
+                  Horário de Brasília. Se o servidor estiver desligado nesse horário, o aviso sai assim que ele voltar, no mesmo dia.
+                </p>
               </div>
 
               <div className="flex flex-col justify-end pb-1.5">
@@ -263,7 +275,7 @@ export default function TelegramConfigPanel() {
             <button
               onClick={handleSendReportNow}
               disabled={notifying || !configs.botToken || !configs.chatId}
-              className="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-medium text-xs sm:text-sm px-4 py-2.5 rounded-xl transition duration-150 border border-emerald-150 flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
+              className="bg-emerald-50 hover:bg-emerald-100 text-emerald-800 font-medium text-xs sm:text-sm px-4 py-2.5 rounded-xl transition duration-150 border border-emerald-200 flex items-center justify-center gap-1.5 disabled:opacity-50 cursor-pointer"
             >
               <Bell className="w-4 h-4 text-emerald-600" />
               {notifying ? 'Enviando...' : 'Disparar Relatório'}
@@ -275,11 +287,11 @@ export default function TelegramConfigPanel() {
         <div className="lg:col-span-2 space-y-4 flex flex-col justify-between">
           
           {/* Instructions Box */}
-          <div className="bg-slate-50 rounded-2xl p-5 border border-slate-200/65">
+          <div className="bg-slate-50 rounded-2xl p-5 border border-slate-200">
             <h4 className="font-semibold text-slate-800 text-xs sm:text-sm mb-2 uppercase tracking-wide">Como conectar seu celular?</h4>
             <ol className="text-xs text-slate-600 space-y-2.5 list-decimal pl-4">
-              <li>Clique no link <a href="https://t.me/BotFather" target="_blank" className="text-indigo-600 font-medium underline">@BotFather</a> no Telegram, inicie-o e mande o comando <code className="bg-white px-1.5 py-0.5 rounded border font-mono">/newbot</code>. Defina nome e apelido para obter o <strong>Token</strong>.</li>
-              <li>Acesse <a href="https://t.me/userinfobot" target="_blank" className="text-indigo-600 font-medium underline">@userinfobot</a> no Telegram, mande no chat dele para descobrir o seu número <strong>Chat ID</strong>.</li>
+              <li>Clique no link <a href="https://t.me/BotFather" target="_blank" rel="noopener noreferrer" className="text-indigo-600 font-medium underline">@BotFather</a> no Telegram, inicie-o e mande o comando <code className="bg-white px-1.5 py-0.5 rounded border font-mono">/newbot</code>. Defina nome e apelido para obter o <strong>Token</strong>.</li>
+              <li>Acesse <a href="https://t.me/userinfobot" target="_blank" rel="noopener noreferrer" className="text-indigo-600 font-medium underline">@userinfobot</a> no Telegram, mande no chat dele para descobrir o seu número <strong>Chat ID</strong>.</li>
               <li>Preencha os dados à esquerda, salve e aperte <strong>Enviar Teste</strong> para validar!</li>
               <li>Lembre-se de primeiro iniciar o seu próprio bot recém-criado tocando no botão <strong>Começar (/start)</strong> nele, para que ele tenha autorização de mandar mensagens para você!</li>
             </ol>
@@ -315,7 +327,7 @@ export default function TelegramConfigPanel() {
 
               {/* Chat bubble body */}
               <div className="bg-[#182533] border border-[#202E3E] text-slate-200 rounded-2xl rounded-tr-none px-4 py-3 max-w-[92%] self-end relative shadow-md">
-                {renderMockTelegramText(previewReport)}
+                {renderTelegramHtml(previewReport)}
                 <div className="text-right text-[10px] text-slate-400 mt-2 font-mono">
                   {configs.dailyTime} ✔✔
                 </div>
