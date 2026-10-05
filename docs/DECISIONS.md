@@ -78,6 +78,10 @@ quem tiver a URL le os dados. Quem nao aceitar isso continua com a importacao po
 validado — nunca da URL crua do cliente, senao a rota vira proxy aberto — e trata a pagina de
 login HTML que o Google devolve com status 200 quando a planilha nao e publica. Sincronizar
 **substitui** os lancamentos: a planilha e a fonte da verdade.
+**Nota (2026-10-05):** o CSV publico continua como modo sem configuracao, mas trocou o `gviz`
+pelo `/export?format=csv` e ganhou ao lado o modo Google Sheets API com conta de servico
+(entradas abaixo). A premissa "API key nao ajudaria" segue valida; a conta de servico e que
+resolve privacidade e escrita.
 
 ## 2026-09-21 — Layout fluido no lugar de container de largura fixa
 
@@ -91,3 +95,77 @@ beneficiam da largura — e nao texto longo.
 `font-size: clamp(16px, 0.15625vw + 14px, 18px)`, de modo que espacamento e tipografia
 (medidos em `rem`) escalam junto com a viewport: 16px no celular, ~17px em 1920px, 18px a
 partir de 2560px.
+
+## 2026-10-05 — Google Sheets API v4 com conta de servico, sem OAuth de usuario
+
+**Motivo:** o objetivo e o fluxo rodar sem intervencao manual, com a planilha alimentando o
+dashboard e o app gravando de volta (marcar como pago, incluir, editar, apagar). O link publico
+so le. Das formas de autenticar na API: API key so le planilha publica (nao resolve nada que o
+CSV nao resolva); OAuth de usuario exige tela de consentimento, e um app externo em modo
+"teste" que pede qualquer escopo alem de nome/e-mail/perfil (o de planilhas pede) recebe
+refresh token que expira em 7 dias — reautenticar toda semana e exatamente a intervencao
+manual que se quer evitar, e publicar o app exige verificacao do Google. A conta de servico nao expira, e
+gratuita (a Sheets API nao cobra; a cota e 300 leituras/escritas por minuto por projeto) e a
+planilha so precisa ser compartilhada com o e-mail dela.
+**Custo:** configuracao unica no Google Cloud (projeto, ativar a API, criar a conta e a chave
+JSON). A chave privada fica em `data/google-service-account.json`, em texto plano como o token
+do Telegram. Organizacoes Google Workspace podem bloquear criacao de chave por politica.
+**Regra:** com chave configurada, o modo e API; sem chave, CSV publico. A chave entra pela
+interface (ou `GOOGLE_APPLICATION_CREDENTIALS`) e nunca volta ao navegador. Se a API falhar
+(planilha nao compartilhada, chave revogada), a leitura cai para o CSV publico com aviso e o
+app fica somente leitura, em vez de parar de atualizar.
+
+## 2026-10-05 — JWT da conta de servico assinado com `crypto`, sem `googleapis`
+
+**Motivo:** o fluxo JWT bearer (RFC 7523) e uma assinatura RS256 e um POST; o pacote
+`googleapis` tem dezenas de MB para usar quatro endpoints REST.
+**Custo:** renovacao de token e tratamento de erro do Google ficam por nossa conta
+(`server/google-auth.ts`, `server/sheets-api.ts`).
+**Regra:** endpoints do Google ficam fixos no codigo. O `token_uri` do JSON da chave e ignorado,
+para o servidor nunca mandar uma assinatura para um host que veio de dado colado.
+
+## 2026-10-05 — Export CSV por `/export?format=csv`, nao `/gviz/tq`
+
+**Motivo:** o endpoint `gviz` escolhe um tipo por coluna pela maioria das celulas e devolve
+vazio nas que fogem dele (documentado na Query Language): "dia 10" numa coluna de datas, ou
+"a definir" numa coluna de valores, sumiam. Ele tambem adivinha quantas linhas sao cabecalho.
+O `/export` devolve exatamente o que aparece nas celulas.
+**Custo:** o `/export` nao seleciona aba por nome, so por `gid` — sem `gid` na URL, le a
+primeira aba. Selecionar varias abas fica para o modo API.
+**Regra:** `buildCsvExportUrl` monta `/export?format=csv[&gid=]`.
+
+## 2026-10-05 — Sincronizacao automatica no servidor
+
+**Motivo:** antes, a planilha so era lida no clique em "Sincronizar agora", e o aviso do
+Telegram usava o que estivesse salvo — editar a planilha nao chegava no aviso sem abrir o app.
+**Regra:** o agendador de 30s relê a planilha no intervalo configurado (padrao 5 min, 0
+desliga), contado da ultima tentativa (falha nao vira tentativa a cada 30s); o aviso diario
+relê antes de compilar; abrir ou focar o app pede releitura se a ultima tiver mais de 60s. O
+navegador consulta `/api/status` a cada 30s e so recarrega os lancamentos quando `dataVersion`
+muda. Leitura sem cabecalho e sem nenhuma linha e tratada como erro (mantem os dados); com
+cabecalho, planilha vazia e legitima.
+
+## 2026-10-05 — Vencimento vazio significa "sem vencimento", nao "hoje"
+
+**Motivo:** `parseDateToISO` caia para a data de hoje quando a celula estava vazia. Com leitura
+automatica, isso fazia toda conta sem data "vencer hoje" todo dia no aviso do Telegram.
+**Regra:** sem data reconhecivel, `dueDate` e `''`. Lancamento sem data conta em todos os meses
+do filtro de periodo (costuma ser expectativa mensal fixa) e fica fora dos avisos. Dia solto
+("10", "dia 10") vira o dia 10 do mes corrente.
+
+## 2026-10-05 — Telegram em HTML e aviso diario com recuperacao
+
+**Motivo:** com `parse_mode: Markdown`, um `_` ou `*` no nome de um lancamento vindo da planilha
+fazia o Telegram recusar a mensagem inteira. E o aviso so saia se o agendador rodasse
+exatamente no minuto configurado: servidor reiniciando nesse minuto pulava o dia.
+**Regra:** HTML com `escapeHtml` no texto da planilha; o aviso sai na primeira volta do
+agendador com `hora >= dailyTime` em que o dia ainda nao foi registrado; falha de envio espera
+10 minutos antes de tentar de novo. Datas do relatorio no fuso de Brasilia.
+
+## 2026-10-05 — `server.ts` dividido em `server/`
+
+**Motivo:** a integracao com a API (autenticacao, cliente, sincronizacao e escrita) mais que
+dobraria um arquivo que ja juntava rotas, persistencia, Telegram e agendador.
+**Regra:** `server.ts` fica com rotas, agendador e setup do Vite; persistencia, Telegram,
+autenticacao Google, cliente da Sheets API e sincronizacao ficam em modulos de `server/`. O
+esbuild do `npm run build` empacota tudo num `dist/server.cjs`, como antes.
