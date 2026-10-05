@@ -1,3 +1,16 @@
+# [1.2.0](https://github.com/italofelipe01/gestor-financeiro/compare/v1.1.0...v1.2.0) (2026-10-05)
+
+
+### Bug Fixes
+
+* **sheets:** le a planilha com aspas, titulo acima do cabecalho e colunas ausentes ([8c131de](https://github.com/italofelipe01/gestor-financeiro/commit/8c131de85faddee3f2c913e03d152f9105ec7398))
+
+
+### Features
+
+* **sheets:** integra a google sheets api e sincroniza a planilha sozinho ([e850302](https://github.com/italofelipe01/gestor-financeiro/commit/e85030243f6865f2e2b89d77f611fc210ff377aa))
+* **ui:** dashboard por mes, edicao na planilha e aba de conexao com o google sheets ([1fe3761](https://github.com/italofelipe01/gestor-financeiro/commit/1fe376118602e57059401952a6cc598f264fe638))
+
 # [1.1.0](https://github.com/italofelipe01/gestor-financeiro/compare/v1.0.0...v1.1.0) (2026-09-21)
 
 
