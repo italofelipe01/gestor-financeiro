@@ -1,259 +1,139 @@
-import express from 'express';
+import express, { Response } from 'express';
 import path from 'path';
-import fs from 'fs';
 import { createServer as createViteServer } from 'vite';
-import { INITIAL_TRANSACTIONS } from './src/data/seed';
-import { Transaction, TelegramConfig, GoogleSheetsConfig } from './src/types';
-import { filterPersonalTransactions } from './src/utils/finance';
+import { AppStatus, TelegramConfig, Transaction } from './src/types';
 import {
-  buildCsvExportUrl,
-  extractSheetGid,
-  extractSpreadsheetId,
-  parseSpreadsheetText,
-} from './src/utils/spreadsheet';
+  APP_TIME_ZONE,
+  filterPersonalTransactions,
+  getTodayISO,
+  parseCurrencyBR,
+  parseDateToISO,
+} from './src/utils/finance';
+import {
+  getAccessToken,
+  getServiceAccountStatus,
+  parseServiceAccount,
+  removeServiceAccount,
+  saveServiceAccount,
+} from './server/google-auth';
+import {
+  addMissingColumns,
+  appendTransactionToSheet,
+  connectSheet,
+  deleteTransactionInSheet,
+  disconnectSheet,
+  getSheetsErrorStatus,
+  getSheetsStatus,
+  isAutoSyncDue,
+  isSheetConnected,
+  onCredentialsChanged,
+  sheetsErrorMessage,
+  syncNow,
+  updateSheetSettings,
+  updateTransactionInSheet,
+} from './server/sheets-sync';
+import {
+  addNotifLog,
+  buildSampleTransactions,
+  getDataVersion,
+  loadNotifLogs,
+  loadSheetsConfig,
+  loadTelegramConfig,
+  loadTransactions,
+  saveTelegramConfig,
+  saveTransactions,
+} from './server/storage';
+import { PendingReport, compilePendingReport, sendTelegramMessage } from './server/telegram';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
+// 0.0.0.0 deixa abrir o app pelo celular na mesma rede. O app nao tem login: em rede que
+// nao e sua, use HOST=127.0.0.1.
+const HOST = process.env.HOST || '0.0.0.0';
 
-app.use(express.json());
+// Colagem manual de planilha grande passa facil do limite padrao de 100 KB.
+app.use(express.json({ limit: '2mb' }));
 
-// Prepare the database directory
-const DB_DIR = path.join(process.cwd(), 'data');
-const TRANSACTIONS_FILE = path.join(DB_DIR, 'transactions.json');
-const TELEGRAM_FILE = path.join(DB_DIR, 'telegram.json');
-const SHEETS_FILE = path.join(DB_DIR, 'sheets.json');
-
-if (!fs.existsSync(DB_DIR)) {
-  fs.mkdirSync(DB_DIR, { recursive: true });
+function sendError(res: Response, err: unknown) {
+  const status = getSheetsErrorStatus(err);
+  if (status >= 500) console.error(err);
+  res.status(status).json({ error: sheetsErrorMessage(err) });
 }
 
-// Ensure database file loaded or seeded
-function loadTransactions(): Transaction[] {
-  try {
-    if (fs.existsSync(TRANSACTIONS_FILE)) {
-      const data = fs.readFileSync(TRANSACTIONS_FILE, 'utf-8');
-      return JSON.parse(data);
-    }
-  } catch (err) {
-    console.error('Error reading transactions.json, resorting to seed data:', err);
-  }
-  // Fallback to seed data and write it
-  saveTransactions(INITIAL_TRANSACTIONS);
-  return INITIAL_TRANSACTIONS;
-}
+type TransactionInput = Omit<Transaction, 'id' | 'source'>;
 
-function saveTransactions(data: Transaction[]) {
-  try {
-    fs.writeFileSync(TRANSACTIONS_FILE, JSON.stringify(data, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error writing to transactions.json:', err);
-  }
-}
+/** Normaliza o corpo de criacao/edicao. Campo ausente mantem o valor atual (edicao parcial). */
+function sanitizeTransactionInput(body: any, current?: Transaction): TransactionInput {
+  const input = body ?? {};
+  const base: TransactionInput = current ?? {
+    launch: 'Novo Item',
+    costCenter: 'Despesas',
+    category: 'Geral',
+    amount: 0,
+    paid: false,
+    dueDate: getTodayISO(),
+    paymentDate: null,
+  };
 
-// Telegram Config setup
-const DEFAULT_TELEGRAM_CONFIG: TelegramConfig = {
-  botToken: process.env.TELEGRAM_BOT_TOKEN || '',
-  chatId: process.env.TELEGRAM_CHAT_ID || '',
-  dailyTime: '09:00',
-  enabled: false,
-};
-
-function loadTelegramConfig(): TelegramConfig {
-  try {
-    if (fs.existsSync(TELEGRAM_FILE)) {
-      const data = fs.readFileSync(TELEGRAM_FILE, 'utf-8');
-      const loaded = JSON.parse(data);
-      return {
-        botToken: loaded.botToken || process.env.TELEGRAM_BOT_TOKEN || '',
-        chatId: loaded.chatId || process.env.TELEGRAM_CHAT_ID || '',
-        dailyTime: loaded.dailyTime || '09:00',
-        enabled: typeof loaded.enabled === 'boolean' ? loaded.enabled : false,
-      };
-    }
-  } catch (err) {
-    console.error('Error reading telegram.json:', err);
-  }
-  return DEFAULT_TELEGRAM_CONFIG;
-}
-
-function saveTelegramConfig(config: TelegramConfig) {
-  try {
-    fs.writeFileSync(TELEGRAM_FILE, JSON.stringify(config, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error writing telegram.json:', err);
-  }
-}
-
-// Google Sheets connection
-function loadSheetsConfig(): GoogleSheetsConfig | null {
-  try {
-    if (fs.existsSync(SHEETS_FILE)) {
-      return JSON.parse(fs.readFileSync(SHEETS_FILE, 'utf-8'));
-    }
-  } catch (err) {
-    console.error('Error reading sheets.json:', err);
-  }
-  return null;
-}
-
-function saveSheetsConfig(config: GoogleSheetsConfig) {
-  try {
-    fs.writeFileSync(SHEETS_FILE, JSON.stringify(config, null, 2), 'utf-8');
-  } catch (err) {
-    console.error('Error writing sheets.json:', err);
-  }
-}
-
-// Log of sent notifications to avoid duplication
-const LOGS_FILE = path.join(DB_DIR, 'notif-logs.json');
-function loadNotifLogs(): string[] {
-  try {
-    if (fs.existsSync(LOGS_FILE)) {
-      return JSON.parse(fs.readFileSync(LOGS_FILE, 'utf-8'));
-    }
-  } catch (e) {}
-  return [];
-}
-function addNotifLog(dateStr: string) {
-  try {
-    const logs = loadNotifLogs();
-    if (!logs.includes(dateStr)) {
-      logs.push(dateStr);
-      // Keep logs to a reasonable size (last 30 days)
-      if (logs.length > 30) {
-        logs.shift();
-      }
-      fs.writeFileSync(LOGS_FILE, JSON.stringify(logs, null, 2), 'utf-8');
-    }
-  } catch (e) {}
-}
-
-// Function to send telegram message
-async function sendTelegramMessage(botToken: string, chatId: string, text: string): Promise<boolean> {
-  if (!botToken || !chatId) {
-    console.error('Telegram keys missing: token or chat ID is empty');
-    return false;
-  }
-  try {
-    const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        chat_id: chatId,
-        text: text,
-        parse_mode: 'Markdown',
-      }),
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      console.error('Telegram API error:', errText);
-      return false;
-    }
-    return true;
-  } catch (error) {
-    console.error('Error calling Telegram API:', error);
-    return false;
-  }
-}
-
-// Compile daily message report
-function compilePendingReport(transactions: Transaction[]): { markdown: string; upcomingCount: number; amount: number } {
-  // Filters despesas unpaid
-  const unpaid = transactions.filter(t => t.costCenter === 'Despesas' && !t.paid);
-  
-  // Format numbers to BRL
-  const fmt = (val: number) => 
-    new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' }).format(val);
-
-  let upcomingCount = 0;
-  let totalAmount = 0;
-  let rowsMarkdown = '';
-
-  // Get current date representation in BRT (America/Sao_Paulo is usually UTC -3)
-  // Let's analyze impending payments (due in the next 7 days, or overdue)
-  const now = new Date();
-  
-  // Parse YYYY-MM-DD
-  unpaid.forEach(item => {
-    dueDate: {
-      const parts = item.dueDate.split('-');
-      if (parts.length === 3) {
-        const dYear = parseInt(parts[0]);
-        const dMonth = parseInt(parts[1]) - 1;
-        const dDay = parseInt(parts[2]);
-        const itemDate = new Date(dYear, dMonth, dDay);
-        
-        // Calculate diff in days
-        const diffTime = itemDate.getTime() - now.getTime();
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-        
-        // Include if overdue or due within 7 days
-        if (diffDays <= 7) {
-          upcomingCount++;
-          totalAmount += item.amount;
-          const label = diffDays < 0 ? '⚠️ *ATRASADO*' : diffDays === 0 ? '⏰ *HOJE*' : `⏳ em ${diffDays}d`;
-          const formattedDate = `${parts[2]}/${parts[1]}`;
-          rowsMarkdown += `• *${item.launch}* - ${fmt(item.amount)} [Vence ${formattedDate} - ${label}]\n`;
-        }
-      } else {
-        // Fallback for non-standard formats
-        upcomingCount++;
-        totalAmount += item.amount;
-        rowsMarkdown += `• *${item.launch}* - ${fmt(item.amount)} [Vence: ${item.dueDate}]\n`;
-      }
-    }
-  });
-
-  // Global summaries
-  const totalPaid = transactions.filter(t => t.costCenter === 'Despesas' && t.paid).reduce((acc, t) => acc + t.amount, 0);
-  const totalPending = transactions.filter(t => t.costCenter === 'Despesas' && !t.paid).reduce((acc, t) => acc + t.amount, 0);
-  const totalIncome = transactions.filter(t => t.costCenter === 'Receitas').reduce((acc, t) => acc + t.amount, 0);
-
-  let markdown = `*📅 CONTAS+ FÁCIL - AVISOS DIÁRIOS*\n\n`;
-  
-  if (upcomingCount > 0) {
-    markdown += `Olá! Você tem *${upcomingCount}* despesas vencendo em breve ou vencidas que precisam de atenção:\n\n`;
-    markdown += rowsMarkdown;
-    markdown += `\n💰 *Total a desembolsar com estes avisos:* ${fmt(totalAmount)}\n`;
-  } else {
-    markdown += `🎉 Olá! Não há nenhuma despesa vencida ou com vencimento nos próximos 7 dias. Tudo em dia!\n`;
+  const paid = input.paid !== undefined ? !!input.paid : base.paid;
+  let paymentDate: string | null = null;
+  if (paid) {
+    paymentDate = input.paymentDate
+      ? parseDateToISO(input.paymentDate, '') || getTodayISO()
+      : base.paymentDate || getTodayISO();
   }
 
-  markdown += `\n📊 *Resumo Geral do Mês:*
-✅ Despesas Pagas: ${fmt(totalPaid)}
-⏳ Despesas Pendentes: ${fmt(totalPending)}
-💼 Receitas Totais: ${fmt(totalIncome)}
-💵 Saldo Final Estimado: ${fmt(totalIncome - (totalPaid + totalPending))}`;
-
-  return { markdown, upcomingCount, amount: totalAmount };
+  return {
+    launch: input.launch !== undefined ? String(input.launch).trim() || base.launch : base.launch,
+    costCenter: input.costCenter !== undefined ? (input.costCenter === 'Receitas' ? 'Receitas' : 'Despesas') : base.costCenter,
+    category: input.category !== undefined ? String(input.category).trim() || 'Geral' : base.category,
+    amount:
+      input.amount !== undefined
+        ? Math.abs(typeof input.amount === 'number' ? input.amount : parseCurrencyBR(input.amount)) || 0
+        : base.amount,
+    paid,
+    // Vazio e valido: lancamento sem vencimento.
+    dueDate: input.dueDate !== undefined ? parseDateToISO(input.dueDate, '') : base.dueDate,
+    paymentDate,
+  };
 }
 
-// API Routes
+const MANUAL_IMPORT_BLOCKED =
+  'Com uma planilha conectada, ela e a fonte dos lancamentos: uma importacao manual seria apagada na proxima sincronizacao. Desconecte a planilha para importar por colagem.';
 
-// 1. Transactions CRUD
-app.get('/api/transactions', (req, res) => {
-  const list = loadTransactions();
-  res.json(list);
+// 0. Estado geral (o navegador consulta periodicamente para saber se precisa recarregar)
+app.get('/api/status', (req, res) => {
+  const status: AppStatus = {
+    dataVersion: getDataVersion(),
+    sheets: getSheetsStatus(),
+    serviceAccount: getServiceAccountStatus(),
+  };
+  res.json(status);
 });
 
-app.post('/api/transactions', (req, res) => {
+// 1. Transactions CRUD
+// Com planilha conectada no modo API, criar/editar/apagar grava na planilha. No link publico
+// (somente leitura) essas rotas recusam, porque a proxima sincronizacao desfaria a alteracao.
+app.get('/api/transactions', (req, res) => {
+  res.json(loadTransactions());
+});
+
+app.post('/api/transactions', async (req, res) => {
+  const item = sanitizeTransactionInput(req.body);
+
+  if (isSheetConnected()) {
+    try {
+      return res.json(await appendTransactionToSheet(item));
+    } catch (err) {
+      return sendError(res, err);
+    }
+  }
+
   const list = loadTransactions();
-  const newItem: Transaction = {
-    id: 'tx-' + Math.random().toString(36).substr(2, 9),
-    launch: req.body.launch || 'Novo Item',
-    costCenter: req.body.costCenter === 'Receitas' ? 'Receitas' : 'Despesas',
-    category: req.body.category || 'Geral',
-    amount: parseFloat(req.body.amount) || 0,
-    paid: !!req.body.paid,
-    dueDate: req.body.dueDate || new Date().toISOString().split('T')[0],
-    paymentDate: req.body.paid ? (req.body.paymentDate || new Date().toISOString().split('T')[0]) : null,
-  };
+  const newItem: Transaction = { ...item, id: 'tx-' + Math.random().toString(36).substring(2, 11) };
   list.push(newItem);
   saveTransactions(list);
   res.json(newItem);
@@ -261,22 +141,19 @@ app.post('/api/transactions', (req, res) => {
 
 // Import entire dataset (CSV or bulk edit)
 app.post('/api/transactions/import', (req, res) => {
+  if (isSheetConnected()) return res.status(409).json({ error: MANUAL_IMPORT_BLOCKED });
+
   const items = req.body;
   if (!Array.isArray(items)) {
-    return res.status(400).json({ error: 'Formato inválido. Esperança de array de transações.' });
+    return res.status(400).json({ error: 'Formato inválido. Esperado um array de transações.' });
   }
 
-  // Validate and format items
-  const formatted: Transaction[] = items.map((t, idx) => ({
-    id: t.id || 'tx-import-' + idx + '-' + Math.random().toString(36).substr(2, 5),
-    launch: t.launch || 'Sem nome',
-    costCenter: t.costCenter === 'Receitas' ? 'Receitas' : 'Despesas',
-    category: t.category || 'Outros',
-    amount: parseFloat(t.amount) || 0,
-    paid: typeof t.paid === 'boolean' ? t.paid : false,
-    dueDate: t.dueDate || new Date().toISOString().split('T')[0],
-    paymentDate: t.paymentDate || null,
-  }));
+  const formatted: Transaction[] = filterPersonalTransactions(
+    items.map((t, idx) => ({
+      ...sanitizeTransactionInput({ ...t, launch: t?.launch || 'Sem nome', category: t?.category || 'Outros', dueDate: t?.dueDate ?? '' }),
+      id: typeof t?.id === 'string' && t.id ? t.id : 'tx-import-' + idx + '-' + Math.random().toString(36).substring(2, 7),
+    })),
+  );
 
   saveTransactions(formatted);
   res.json({ success: true, count: formatted.length, data: formatted });
@@ -284,38 +161,52 @@ app.post('/api/transactions/import', (req, res) => {
 
 // Reset database back to Initial User Seed
 app.post('/api/transactions/reset', (req, res) => {
-  saveTransactions(INITIAL_TRANSACTIONS);
-  res.json({ success: true, count: INITIAL_TRANSACTIONS.length, data: INITIAL_TRANSACTIONS });
+  if (isSheetConnected()) return res.status(409).json({ error: MANUAL_IMPORT_BLOCKED });
+  const sample = buildSampleTransactions();
+  saveTransactions(sample);
+  res.json({ success: true, count: sample.length, data: sample });
 });
 
-app.put('/api/transactions/:id', (req, res) => {
+app.put('/api/transactions/:id', async (req, res) => {
   const list = loadTransactions();
-  const idx = list.findIndex(t => t.id === req.params.id);
+  const idx = list.findIndex((t) => t.id === req.params.id);
   if (idx === -1) {
-    return res.status(404).json({ error: 'Transação não encontrada' });
+    return res.status(404).json({ error: 'Transação não encontrada. Os dados podem ter sido atualizados pela planilha.' });
   }
 
   const current = list[idx];
-  const updated: Transaction = {
-    ...current,
-    launch: req.body.launch !== undefined ? req.body.launch : current.launch,
-    costCenter: req.body.costCenter !== undefined ? req.body.costCenter : current.costCenter,
-    category: req.body.category !== undefined ? req.body.category : current.category,
-    amount: req.body.amount !== undefined ? parseFloat(req.body.amount) : current.amount,
-    paid: req.body.paid !== undefined ? !!req.body.paid : current.paid,
-    dueDate: req.body.dueDate !== undefined ? req.body.dueDate : current.dueDate,
-    paymentDate: req.body.paid ? (req.body.paymentDate || new Date().toISOString().split('T')[0]) : null,
-  };
+  const updated: Transaction = { ...current, ...sanitizeTransactionInput(req.body, current) };
+
+  if (isSheetConnected()) {
+    try {
+      return res.json(await updateTransactionInSheet(current, updated));
+    } catch (err) {
+      return sendError(res, err);
+    }
+  }
 
   list[idx] = updated;
   saveTransactions(list);
   res.json(updated);
 });
 
-app.delete('/api/transactions/:id', (req, res) => {
-  let list = loadTransactions();
-  const filtered = list.filter(t => t.id !== req.params.id);
-  saveTransactions(filtered);
+app.delete('/api/transactions/:id', async (req, res) => {
+  const list = loadTransactions();
+  const current = list.find((t) => t.id === req.params.id);
+  if (!current) {
+    return res.status(404).json({ error: 'Transação não encontrada. Os dados podem ter sido atualizados pela planilha.' });
+  }
+
+  if (isSheetConnected()) {
+    try {
+      await deleteTransactionInSheet(current);
+      return res.json({ success: true });
+    } catch (err) {
+      return sendError(res, err);
+    }
+  }
+
+  saveTransactions(list.filter((t) => t.id !== current.id));
   res.json({ success: true });
 });
 
@@ -326,15 +217,38 @@ app.get('/api/telegram/config', (req, res) => {
 
 app.post('/api/telegram/config', (req, res) => {
   const oldConfig = loadTelegramConfig();
+  const dailyTime = typeof req.body.dailyTime === 'string' && /^([01]\d|2[0-3]):[0-5]\d$/.test(req.body.dailyTime)
+    ? req.body.dailyTime
+    : oldConfig.dailyTime;
   const newConfig: TelegramConfig = {
-    botToken: req.body.botToken !== undefined ? req.body.botToken : oldConfig.botToken,
-    chatId: req.body.chatId !== undefined ? req.body.chatId : oldConfig.chatId,
-    dailyTime: req.body.dailyTime || oldConfig.dailyTime,
+    botToken: req.body.botToken !== undefined ? String(req.body.botToken).trim() : oldConfig.botToken,
+    chatId: req.body.chatId !== undefined ? String(req.body.chatId).trim() : oldConfig.chatId,
+    dailyTime,
     enabled: typeof req.body.enabled === 'boolean' ? req.body.enabled : oldConfig.enabled,
   };
   saveTelegramConfig(newConfig);
   res.json(newConfig);
 });
+
+/**
+ * Com planilha conectada, o relatorio relê a planilha antes (salvo leitura de menos de 1 min):
+ * o aviso das 9h reflete a planilha mesmo que ninguem tenha aberto o app.
+ */
+async function buildDailyReport(): Promise<PendingReport> {
+  let note: string | null = null;
+  if (isSheetConnected()) {
+    try {
+      await syncNow({ maxAgeSeconds: 60 });
+    } catch (err) {
+      const lastSyncAt = loadSheetsConfig()?.lastSyncAt;
+      const when = lastSyncAt
+        ? ` de ${new Date(lastSyncAt).toLocaleString('pt-BR', { timeZone: APP_TIME_ZONE, dateStyle: 'short', timeStyle: 'short' })}`
+        : '';
+      note = `Não consegui ler a planilha agora (${sheetsErrorMessage(err)}). Valores da última sincronização${when}.`;
+    }
+  }
+  return compilePendingReport(loadTransactions(), note);
+}
 
 // Send a test message
 app.post('/api/telegram/test', async (req, res) => {
@@ -346,8 +260,8 @@ app.post('/api/telegram/test', async (req, res) => {
     return res.status(400).json({ error: 'Configuração do Telegram incompleta. Preencha o Token do Bot e Chat ID.' });
   }
 
-  const testMessage = `🔔 *Teste de Notificação - Contas+ Fácil*\n\nOlá! Seu bot de finanças está funcionando perfeitamente. O aplicativo está conectado e programado para te avisar sobre as próximas contas.`;
-  
+  const testMessage = '🔔 <b>Teste de Notificação - Contas+ Fácil</b>\n\nOlá! Seu bot de finanças está funcionando perfeitamente. O aplicativo está conectado e programado para te avisar sobre as próximas contas.';
+
   const ok = await sendTelegramMessage(token, chat, testMessage);
   if (ok) {
     res.json({ success: true, message: 'Mensagem de teste enviada com sucesso!' });
@@ -366,22 +280,18 @@ app.post('/api/telegram/notify-now', async (req, res) => {
     return res.status(400).json({ error: 'Configuração do Telegram inadequada. Forneça o Token do Bot e Chat ID.' });
   }
 
-  const transactions = loadTransactions();
-  const report = compilePendingReport(transactions);
-
-  const ok = await sendTelegramMessage(token, chat, report.markdown);
+  const report = await buildDailyReport();
+  const ok = await sendTelegramMessage(token, chat, report.html);
   if (ok) {
-    res.json({ success: true, message: 'Relatório diário disparado com sucesso!', report: report.markdown });
+    res.json({ success: true, message: 'Relatório diário disparado com sucesso!', report: report.html });
   } else {
-    res.status(500).json({ error: 'Erro no disparo da notificação de finanças. Verifique seus credenciais e logs.', report: report.markdown });
+    res.status(500).json({ error: 'Erro no disparo da notificação de finanças. Verifique suas credenciais e logs.', report: report.html });
   }
 });
 
-// Endpoint to view the formatted report text on-screen
+// Endpoint to view the formatted report text on-screen (HTML do Telegram: so <b> e <i>)
 app.get('/api/telegram/preview-report', (req, res) => {
-  const transactions = loadTransactions();
-  const report = compilePendingReport(transactions);
-  res.json({ report: report.markdown });
+  res.json({ report: compilePendingReport(loadTransactions()).html });
 });
 
 // 3. Google Sheets connection
@@ -389,137 +299,141 @@ app.get('/api/sheets/config', (req, res) => {
   res.json(loadSheetsConfig());
 });
 
-app.post('/api/sheets/config', (req, res) => {
-  const sheetUrl = String(req.body.sheetUrl || '').trim();
-  const spreadsheetId = extractSpreadsheetId(sheetUrl);
+app.get('/api/sheets/status', (req, res) => {
+  res.json(getSheetsStatus());
+});
 
-  if (!spreadsheetId) {
-    return res.status(400).json({
-      error: 'URL invalida. Cole o endereco completo da planilha, no formato https://docs.google.com/spreadsheets/d/...',
-    });
+// Com `sheetUrl`, conecta (ou troca) a planilha e ja le; sem, ajusta abas/intervalo.
+app.post('/api/sheets/config', async (req, res) => {
+  try {
+    const { error } =
+      req.body.sheetUrl !== undefined
+        ? await connectSheet(String(req.body.sheetUrl || ''))
+        : await updateSheetSettings({ tabs: req.body.tabs, autoSyncMinutes: req.body.autoSyncMinutes });
+    res.json({ status: getSheetsStatus(), error });
+  } catch (err) {
+    sendError(res, err);
   }
-
-  const existing = loadSheetsConfig();
-  const config: GoogleSheetsConfig = {
-    sheetUrl,
-    spreadsheetId,
-    gid: extractSheetGid(sheetUrl),
-    // Trocar de planilha invalida o histórico de sincronizacao anterior.
-    lastSyncAt: existing?.spreadsheetId === spreadsheetId ? existing.lastSyncAt : null,
-    lastSyncCount: existing?.spreadsheetId === spreadsheetId ? existing.lastSyncCount : 0,
-  };
-
-  saveSheetsConfig(config);
-  res.json(config);
 });
 
 app.delete('/api/sheets/config', (req, res) => {
-  try {
-    if (fs.existsSync(SHEETS_FILE)) fs.unlinkSync(SHEETS_FILE);
-  } catch (err) {
-    console.error('Error removing sheets.json:', err);
-  }
+  disconnectSheet();
   res.json({ success: true });
 });
 
-// Baixa a planilha e substitui os lancamentos. A planilha e a fonte da verdade:
+// Le a planilha e substitui os lancamentos. A planilha e a fonte da verdade:
 // sincronizar sobrescreve o que estiver salvo, e nao mescla.
 app.post('/api/sheets/sync', async (req, res) => {
-  const config = loadSheetsConfig();
-  if (!config) {
-    return res.status(400).json({ error: 'Nenhuma planilha conectada. Informe a URL da planilha primeiro.' });
-  }
-
-  // A URL buscada e sempre montada a partir do id ja validado, e nunca a string
-  // que veio do cliente: isso impede que a rota vire um proxy para qualquer host.
-  const csvUrl = buildCsvExportUrl(config.spreadsheetId, config.gid);
-
-  let csv: string;
   try {
-    const response = await fetch(csvUrl, { signal: AbortSignal.timeout(15000) });
-
-    if (!response.ok) {
-      return res.status(502).json({
-        error: `O Google respondeu ${response.status}. Confirme que a planilha esta compartilhada como "qualquer pessoa com o link pode ver".`,
-      });
-    }
-
-    csv = await response.text();
+    const result = await syncNow({ maxAgeSeconds: Number(req.body?.maxAgeSeconds) || 0 });
+    res.json({ success: true, ...result, dataVersion: getDataVersion(), status: getSheetsStatus() });
   } catch (err) {
-    console.error('Error fetching spreadsheet:', err);
-    return res.status(502).json({ error: 'Nao foi possivel baixar a planilha. Verifique a conexao e a URL.' });
+    sendError(res, err);
+  }
+});
+
+app.post('/api/sheets/add-columns', async (req, res) => {
+  try {
+    const added = await addMissingColumns();
+    res.json({ success: true, added, status: getSheetsStatus() });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+// Conta de servico: a chave privada entra aqui e nunca volta para o navegador.
+app.get('/api/sheets/service-account', (req, res) => {
+  res.json(getServiceAccountStatus());
+});
+
+app.post('/api/sheets/service-account', async (req, res) => {
+  let credentials;
+  try {
+    credentials = parseServiceAccount(req.body?.json ?? req.body);
+    // Pede um token antes de salvar: chave revogada ou de outro tipo falha ja aqui.
+    await getAccessToken(credentials);
+  } catch (err) {
+    return res.status(400).json({ error: sheetsErrorMessage(err) });
   }
 
-  // Planilha sem acesso publico devolve a pagina de login (HTML), com status 200.
-  if (csv.trimStart().startsWith('<')) {
-    return res.status(502).json({
-      error: 'A planilha nao esta publica. No Google Sheets, use Compartilhar > "Qualquer pessoa com o link" como Leitor.',
-    });
+  saveServiceAccount(credentials);
+  onCredentialsChanged();
+
+  let error: string | null = null;
+  if (isSheetConnected()) {
+    try {
+      await syncNow();
+    } catch (err) {
+      error = sheetsErrorMessage(err);
+    }
   }
+  res.json({ serviceAccount: getServiceAccountStatus(), status: getSheetsStatus(), error });
+});
 
-  const parsed = parseSpreadsheetText(csv);
-  const personalItems = filterPersonalTransactions(parsed);
-
-  if (personalItems.length === 0) {
-    return res.status(422).json({
-      error: 'Nenhuma linha valida encontrada na planilha. Confira se as colunas seguem a ordem sugerida.',
-    });
+app.delete('/api/sheets/service-account', (req, res) => {
+  removeServiceAccount();
+  onCredentialsChanged();
+  if (isSheetConnected()) {
+    syncNow().catch((err) => console.error('Sheets sync after removing service account failed:', sheetsErrorMessage(err)));
   }
-
-  const transactions: Transaction[] = personalItems.map((item, idx) => ({
-    ...item,
-    id: 'tx-sheet-' + idx + '-' + Math.random().toString(36).substring(2, 7),
-  }));
-
-  saveTransactions(transactions);
-  saveSheetsConfig({
-    ...config,
-    lastSyncAt: new Date().toISOString(),
-    lastSyncCount: transactions.length,
-  });
-
-  res.json({
-    success: true,
-    count: transactions.length,
-    filteredOut: parsed.length - personalItems.length,
-    data: transactions,
-  });
+  res.json({ serviceAccount: getServiceAccountStatus() });
 });
 
 
-// 4. BACKGROUND CRON JOB LOOPER
-// Runs every 30 seconds to check if we should trigger the daily automatic message.
-setInterval(async () => {
+// 4. BACKGROUND SCHEDULER
+// A cada 30s: sincroniza a planilha quando passou o intervalo configurado e confere se e hora
+// do aviso diario do Telegram.
+
+function brasiliaNow(): { date: string; time: string } {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: APP_TIME_ZONE,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date());
+  const get = (type: string) => parts.find((part) => part.type === type)?.value ?? '';
+  return { date: `${get('year')}-${get('month')}-${get('day')}`, time: `${get('hour')}:${get('minute')}` };
+}
+
+const TELEGRAM_RETRY_MS = 10 * 60000;
+let telegramSending = false;
+let telegramLastFailureAt = 0;
+
+async function runScheduler() {
+  if (isAutoSyncDue()) {
+    syncNow().catch((err) => console.error('Automatic Sheets sync failed:', sheetsErrorMessage(err)));
+  }
+
   const config = loadTelegramConfig();
-  if (!config.enabled || !config.botToken || !config.chatId) {
-    return;
-  }
+  if (!config.enabled || !config.botToken || !config.chatId || telegramSending) return;
+  if (Date.now() - telegramLastFailureAt < TELEGRAM_RETRY_MS) return;
 
-  // Get current date time in Sao Paulo
-  const brtDate = new Date(new Date().toLocaleString("en-US", { timeZone: "America/Sao_Paulo" }));
-  const hour = String(brtDate.getHours()).padStart(2, '0');
-  const minute = String(brtDate.getMinutes()).padStart(2, '0');
-  const currentTimeStr = `${hour}:${minute}`;
+  // ">=" e nao "===": se o servidor estava desligado ou ocupado no minuto exato, o aviso do
+  // dia sai assim que ele voltar, em vez de pular o dia. O log impede o envio duplicado.
+  const { date, time } = brasiliaNow();
+  if (time < config.dailyTime || loadNotifLogs().includes(date)) return;
 
-  // It's the scheduled time!
-  if (currentTimeStr === config.dailyTime) {
-    const todayYMD = `${brtDate.getFullYear()}-${String(brtDate.getMonth() + 1).padStart(2, '0')}-${String(brtDate.getDate()).padStart(2, '0')}`;
-    const logs = loadNotifLogs();
-
-    if (!logs.includes(todayYMD)) {
-      console.log(`Triggering daily automatic Telegram report at ${config.dailyTime} (BRT)...`);
-      const transactions = loadTransactions();
-      const report = compilePendingReport(transactions);
-      
-      const success = await sendTelegramMessage(config.botToken, config.chatId, report.markdown);
-      if (success) {
-        addNotifLog(todayYMD);
-        console.log(`Daily automatic Telegram report successfully sent to Chat ID ${config.chatId}`);
-      } else {
-        console.error(`Failed to send background automatic Telegram report for ${todayYMD}`);
-      }
+  telegramSending = true;
+  try {
+    console.log(`Triggering daily automatic Telegram report at ${time} (BRT)...`);
+    const report = await buildDailyReport();
+    if (await sendTelegramMessage(config.botToken, config.chatId, report.html)) {
+      addNotifLog(date);
+      console.log(`Daily automatic Telegram report successfully sent to Chat ID ${config.chatId}`);
+    } else {
+      telegramLastFailureAt = Date.now();
+      console.error(`Failed to send background automatic Telegram report for ${date}; retrying in 10 minutes`);
     }
+  } finally {
+    telegramSending = false;
   }
+}
+
+setInterval(() => {
+  runScheduler().catch((err) => console.error('Scheduler error:', err));
 }, 30000);
 
 
@@ -540,8 +454,10 @@ async function setupVite() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server started on port ${PORT}`);
+  app.listen(PORT, HOST, () => {
+    console.log(`Server started on http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
+    // Primeira leitura da planilha (e aviso atrasado do dia, se houver) sem esperar 30s.
+    runScheduler().catch((err) => console.error('Scheduler error:', err));
   });
 }
 
